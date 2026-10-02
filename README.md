@@ -74,6 +74,69 @@ The system prompt and the growing history are cached across rounds, which
 matters: history is resent from the top every round, so cost grows
 quadratically without it.
 
+## MCP server
+
+Catalog exposes the tag index to agent platforms as a read-only MCP server.
+Four tools let an agent search fast (local index only), list tags, check catalog
+health, or fetch full thread content live on 1–3 finalists. The server is
+agent-native: it works the same whether called from Claude Code, Claude Desktop,
+or any MCP-compatible client.
+
+### Register with Claude Code
+
+```bash
+claude mcp add catalog -- $PWD/.venv-mcp/bin/python $PWD/mcp_server.py
+```
+
+Replace `$PWD` with the absolute path to this repo, or run it as-is from the
+repo root. The server requires a dedicated venv; see Task 4's notes on
+setup (`requirements-mcp.txt`, `.venv-mcp`).
+
+### Register with Claude Desktop
+
+Add this to `~/Library/Application Support/Claude/claude_desktop_config.json`
+(create it if it does not exist; replace `$HOME` with your home directory):
+
+```json
+{
+  "mcpServers": {
+    "catalog": {
+      "command": "python",
+      "args": ["$HOME/path/to/catalog/mcp_server.py"],
+      "env": {
+        "CATALOG_USER": "user@example.com"
+      }
+    }
+  }
+}
+```
+
+(If the file already exists, merge this under `mcpServers` alongside any other
+servers.)
+
+### Configuration
+
+**`CATALOG_USER`** (optional): The email address whose catalog the server
+accesses. If unset, the server assumes a single-user deployment and uses the
+sole user in the database. If multiple users are stored and `CATALOG_USER` is
+not set, the server exits with an error.
+
+### Design: read-only, no sync trigger
+
+The server **never** writes to the database or triggers a mailbox sync. This
+split is deliberate: if an agent were to trigger a sync, it could run
+double-time alongside the web app's own sync, duplicating work and charges.
+Instead, run `sync_cli.py` separately to populate or refresh the catalog before
+using the server.
+
+```bash
+python sync_cli.py              # syncs CATALOG_USER if set, else the sole user
+python sync_cli.py --user user@example.com  # syncs a specific account
+```
+
+`sync_cli.py` exits 0 on success, 2 if credentials are stale (re-sign in via the
+web app) or 3 if a sync is already running for that account.
+
 ## Performance
 
 Measured on the 11,000-thread corpus, p50 / p95 over 30 runs:
