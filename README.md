@@ -74,6 +74,106 @@ The system prompt and the growing history are cached across rounds, which
 matters: history is resent from the top every round, so cost grows
 quadratically without it.
 
+## MCP server
+
+Catalog exposes the tag index to agent platforms as a read-only MCP server.
+Four tools — `search_catalog`, `list_tags`, `sync_status`, `get_thread` — let
+an agent search fast (local index only), list tags, check catalog health, or
+fetch full thread content live on 1–3 finalists. The server is agent-native:
+it works the same whether called from Claude Code, Claude Desktop, or any
+MCP-compatible client.
+
+### Setup: a dedicated venv
+
+The server needs its own virtualenv, on Python 3.10+ (the `mcp` SDK's
+floor) — separate from the 3.9 venv the rest of this project (and its test
+suite) runs on:
+
+```bash
+brew install python@3.12   # if you don't already have a 3.10+ interpreter
+python3.12 -m venv .venv-mcp
+.venv-mcp/bin/pip install -r requirements-mcp.txt
+```
+
+### Register with Claude Code
+
+```bash
+claude mcp add catalog -- $PWD/.venv-mcp/bin/python $PWD/mcp_server.py
+```
+
+Replace `$PWD` with the absolute path to this repo, or run it as-is from the
+repo root.
+
+### Register with Claude Desktop
+
+Add this to `~/Library/Application Support/Claude/claude_desktop_config.json`
+(create it if it does not exist; replace `/path/to/catalog-mcp` with the
+absolute path to this repo):
+
+```json
+{
+  "mcpServers": {
+    "catalog": {
+      "command": "/path/to/catalog-mcp/.venv-mcp/bin/python",
+      "args": ["/path/to/catalog-mcp/mcp_server.py"],
+      "env": {
+        "DB_PATH": "/path/to/catalog-mcp/catalog.db",
+        "CATALOG_USER": "user@example.com"
+      }
+    }
+  }
+}
+```
+
+`"command": "python"` will not work here: the system `python` almost
+certainly lacks the `mcp` package, and the SDK itself requires Python 3.10+.
+Point `command` at `.venv-mcp/bin/python` directly, with an absolute path —
+Claude Desktop does not run this with the repo as its working directory, so a
+relative path (or a bare `python`) resolves against the wrong interpreter, and
+with no `DB_PATH` the server would otherwise default to a `catalog.db` next to
+`mcp_server.py` itself, which happens to be correct only because the env
+block above sets it explicitly; see Configuration below for what happens if
+you leave it out instead.
+
+(If the file already exists, merge this under `mcpServers` alongside any other
+servers.)
+
+### Configuration
+
+**`DB_PATH`** (optional): Absolute path to the catalog database. If unset,
+the server defaults to `catalog.db` next to `mcp_server.py` (i.e. this repo),
+which is correct for Claude Code (registered from the repo root above) but
+worth setting explicitly for Claude Desktop or any client that may launch the
+process from an unrelated working directory.
+
+**`CATALOG_USER`** (optional): The email address whose catalog the server
+accesses. If unset, the server assumes a single-user deployment and uses the
+sole user in the database. If multiple users are stored and `CATALOG_USER` is
+not set, the affected tool calls return `{"error": "multiple users; set
+CATALOG_USER"}` — the server process itself keeps running either way, since
+each tool call resolves the user independently.
+
+### Design: read-only, no sync trigger
+
+The server **never** writes to the database or triggers a mailbox sync. This
+split is deliberate: if an agent were to trigger a sync, it could run
+double-time alongside the web app's own sync, duplicating work and charges.
+Instead, run `sync_cli.py` separately to populate or refresh the catalog before
+using the server.
+
+```bash
+.venv/bin/python sync_cli.py              # syncs CATALOG_USER if set, else the sole user
+.venv/bin/python sync_cli.py --user user@example.com  # syncs a specific account
+```
+
+`sync_cli.py` exits 0 on success, 1 if the sync itself failed partway through
+(see server logs / the `sync_state` table), 2 if credentials are missing or
+stale or `CATALOG_USER`/`--user` doesn't resolve to a stored user (re-sign in
+via the web app), or 3 if a sync already looks to be running for that account
+— checked both in-process and against the same DB-backed heartbeat the web
+app's own `/sync` route trusts, so this also catches a sync the web app
+started in a different process.
+
 ## Performance
 
 Measured on the 11,000-thread corpus, p50 / p95 over 30 runs:
@@ -178,7 +278,7 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-328 tests, no network: the mail providers, the Anthropic client and the Graph
+374 tests, no network: the mail providers, the Anthropic client and the Graph
 and Gmail transports are all stubbed, so the suite runs offline in about fifteen seconds.
 CI runs the suite plus both secret scans (tracked files and full history) on
 every push — the pre-commit hook only protects clones that opted in via

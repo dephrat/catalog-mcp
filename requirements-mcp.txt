@@ -1,0 +1,10 @@
+mcp>=2,<3
+python-dotenv
+
+# Not used directly by mcp_server.py — pulled in because mcp_tools.py
+# imports providers.py at module level, which imports auth.py (msal) and
+# gauth.py/gmail.py/graph.py (requests) for every tool, not just
+# get_thread. mcp_tools.py is out of scope for this task to change, so
+# these ride along to make `import mcp_tools` possible at all.
+msal
+requests
