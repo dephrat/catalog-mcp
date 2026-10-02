@@ -9,12 +9,16 @@ wrappers in mcp_server.py) never pass a user_id.
 """
 import json
 import os
+import re
 
 import db
+import providers
 
 EMPTY_CATALOG_NOTICE = (
     "catalog is empty — run sync_cli.py to index your mailbox before searching"
 )
+
+BODY_CHAR_CAP = 50_000
 
 
 def resolve_user():
@@ -185,3 +189,85 @@ def sync_status():
         "untagged_count": untagged_count,
         "provider": provider_for(user_id),
     }
+
+
+def _strip_html(text):
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+def get_thread(thread_id):
+    """Fetch a thread's full content live from the mail provider.
+
+    subject/web_link/attachment names come from the local catalog row —
+    they're cheap, already synced, and don't need a provider round trip.
+    Message bodies are never persisted (only a char count is), so those are
+    always fetched live via provider.get_thread.
+
+    The thread_id is checked against the catalog *first*: an id that
+    doesn't exist, or belongs to another user, is rejected before any
+    token refresh or provider call — no network, no leaking which ids
+    exist for other accounts. A refresh_token() that comes back empty
+    (expired/revoked sign-in) is reported as a clear, actionable error
+    instead of surfacing whatever opaque failure the provider API itself
+    would raise downstream.
+    """
+    user_id = resolve_user()
+
+    conn = db.get_db()
+    try:
+        row = conn.execute(
+            "SELECT subject, web_link, attachments FROM threads "
+            "WHERE user_id=? AND thread_id=?",
+            (user_id, thread_id),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        return {"error": f"no such thread: {thread_id!r}"}
+
+    try:
+        attachments = [a["name"] for a in json.loads(row["attachments"] or "[]")]
+    except (ValueError, TypeError):
+        attachments = []
+
+    provider = providers.get(provider_for(user_id))
+    token_cache = db.get_token_cache(user_id)
+    access_token, _ = provider.refresh_token(token_cache)
+    if not access_token:
+        return {
+            "error": f"{provider.label} sign-in expired — please sign in "
+                     "again via the Catalog web app."
+        }
+
+    messages = provider.get_thread(access_token, thread_id)
+
+    out_messages = []
+    remaining = BODY_CHAR_CAP
+    truncated = False
+    for msg in messages:
+        body_text = _strip_html(msg.get("body", "") or "")
+        if len(body_text) > remaining:
+            body_text = body_text[:remaining]
+            truncated = True
+            remaining = 0
+        else:
+            remaining -= len(body_text)
+        out_messages.append({
+            "from": msg.get("from_addr", ""),
+            "to": msg.get("to_addrs", []),
+            "date": msg.get("date", ""),
+            "body_text": body_text,
+        })
+
+    result = {
+        "subject": row["subject"],
+        "web_link": row["web_link"],
+        "messages": out_messages,
+        "attachments": attachments,
+    }
+    if truncated:
+        result["truncated"] = True
+    return result

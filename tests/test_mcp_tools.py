@@ -22,7 +22,8 @@ def seeded(user):
         user_tags=["2016"],
         date_first="2016-03-01T00:00:00Z", date_last="2016-03-01T00:00:00Z",
         has_attachments=1, web_link="https://example.test/car",
-        last_synced="2016-03-02T00:00:00Z"))
+        last_synced="2016-03-02T00:00:00Z",
+        attachments=[{"name": "loan-statement.pdf"}, {"name": "title.png"}]))
     db.upsert_thread(user, make_thread(
         "dentist", subject="Cleaning", ai_tags=["dentist", "teeth", "health"],
         user_tags=[],
@@ -37,6 +38,52 @@ def empty_db(user):
     """A fresh db with a registered user but no threads yet."""
     db.upsert_user(user, "owner@example.com", "Owner", "2024-01-01T00:00:00Z")
     return user
+
+
+class FakeProvider:
+    """Stand-in for a providers.MailProvider — no network, just scripted replies."""
+
+    label = "FakeMail"
+
+    def __init__(self, access_token="live-token", messages=None):
+        self.access_token = access_token
+        self.messages = messages if messages is not None else []
+        self.get_thread_calls = []
+
+    def refresh_token(self, token_cache):
+        if not self.access_token:
+            return (None, None)
+        return (self.access_token, "new-cache")
+
+    def get_thread(self, access_token, thread_id):
+        self.get_thread_calls.append((access_token, thread_id))
+        return self.messages
+
+
+@pytest.fixture
+def fake_provider(monkeypatch):
+    """Patches mcp_tools.providers.get to always return this fake, whatever
+    provider name provider_for() guessed."""
+    fake = FakeProvider(messages=[
+        {
+            "id": "m1", "thread_id": "car", "subject": "Honda loan",
+            "from_addr": "lender@example.com", "to_addrs": ["owner@example.com"],
+            "date": "2016-03-01T00:00:00Z", "has_attachments": True,
+            "body": "<p>Hello <b>there</b></p>", "web_link": "https://provider.test/m1",
+            "container_id": "folder-A",
+        },
+    ])
+    monkeypatch.setattr(mcp_tools.providers, "get", lambda name: fake)
+    return fake
+
+
+@pytest.fixture
+def dead_provider(monkeypatch):
+    """Patches mcp_tools.providers.get to return a provider whose sign-in
+    has expired: refresh_token() -> (None, None)."""
+    fake = FakeProvider(access_token=None)
+    monkeypatch.setattr(mcp_tools.providers, "get", lambda name: fake)
+    return fake
 
 
 class TestResolveUser:
@@ -158,3 +205,85 @@ class TestSyncStatus:
         assert out["thread_count"] == 0
         assert out["untagged_count"] == 0
         assert out["last_synced"] is None
+
+
+class TestGetThread:
+    def test_get_thread_fetches_live_and_strips_html(
+            self, seeded, fake_provider, monkeypatch):
+        monkeypatch.setenv("CATALOG_USER", "owner@example.com")
+
+        out = mcp_tools.get_thread("car")
+
+        assert out["subject"] == "Honda loan"
+        assert out["web_link"] == "https://example.test/car"
+        assert out["attachments"] == ["loan-statement.pdf", "title.png"]
+        assert out["messages"] == [{
+            "from": "lender@example.com",
+            "to": ["owner@example.com"],
+            "date": "2016-03-01T00:00:00Z",
+            "body_text": "Hello there",
+        }]
+        assert "truncated" not in out
+        assert fake_provider.get_thread_calls == [("live-token", "car")]
+
+    def test_get_thread_unknown_id_errors_without_provider_call(
+            self, seeded, monkeypatch):
+        monkeypatch.setenv("CATALOG_USER", "owner@example.com")
+
+        def boom(name):
+            raise AssertionError("providers.get must not be called for an unknown thread")
+
+        monkeypatch.setattr(mcp_tools.providers, "get", boom)
+
+        out = mcp_tools.get_thread("no-such-thread")
+
+        assert "error" in out
+        assert "no-such-thread" in out["error"]
+
+    def test_get_thread_other_users_thread_errors_without_provider_call(
+            self, seeded, monkeypatch):
+        """A thread_id that exists, but for a different user, must read as
+        not-found rather than leaking cross-user existence."""
+        monkeypatch.setenv("CATALOG_USER", "owner@example.com")
+
+        def boom(name):
+            raise AssertionError("providers.get must not be called for another user's thread")
+
+        monkeypatch.setattr(mcp_tools.providers, "get", boom)
+
+        db.upsert_user("other-user", "other@example.com", "Other", "2024-01-01T00:00:00Z")
+        db.upsert_thread("other-user", make_thread("only-others", subject="Secret"))
+
+        out = mcp_tools.get_thread("only-others")
+
+        assert "error" in out
+
+    def test_get_thread_expired_signin_gives_reauth_message(
+            self, seeded, dead_provider, monkeypatch):
+        monkeypatch.setenv("CATALOG_USER", "owner@example.com")
+
+        out = mcp_tools.get_thread("car")
+
+        assert "error" in out
+        assert "sign" in out["error"].lower()
+        assert "Catalog web app" in out["error"]
+        assert not dead_provider.get_thread_calls
+
+    def test_get_thread_truncates_at_50k_and_flags_it(
+            self, seeded, monkeypatch):
+        monkeypatch.setenv("CATALOG_USER", "owner@example.com")
+        huge = FakeProvider(messages=[
+            {
+                "id": "m1", "thread_id": "car", "subject": "Honda loan",
+                "from_addr": "lender@example.com", "to_addrs": ["owner@example.com"],
+                "date": "2016-03-01T00:00:00Z", "has_attachments": False,
+                "body": "a" * 60_000, "web_link": "https://provider.test/m1",
+                "container_id": "folder-A",
+            },
+        ])
+        monkeypatch.setattr(mcp_tools.providers, "get", lambda name: huge)
+
+        out = mcp_tools.get_thread("car")
+
+        assert out["truncated"] is True
+        assert len(out["messages"][0]["body_text"]) == 50_000
