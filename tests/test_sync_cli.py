@@ -89,6 +89,9 @@ def test_dead_refresh_exits_2_with_sign_in_message(seeded, monkeypatch, capsys):
 
 
 def test_already_running_exits_3_without_calling_run_sync(seeded, monkeypatch):
+    """Exercises the in-process simulation only: app.sync_running is a
+    per-process dict, so this proves the guard works within one process, not
+    that it catches a sync the web app started in a different process."""
     user_id, email = seeded
     fake_provider = FakeProvider()
     monkeypatch.setattr(providers, "get", lambda name: fake_provider)

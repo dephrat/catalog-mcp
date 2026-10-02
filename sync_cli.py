@@ -50,6 +50,13 @@ def main(argv=None):
 
     user_id = _resolve_user_id(args.user)
 
+    # app.sync_running is a plain in-process dict, not a cross-process lock.
+    # This check only sees syncs started by this same CLI process — it
+    # cannot see one the web app's gunicorn worker is running, and the web
+    # app's own /sync route has the identical per-process blind spot in the
+    # other direction. A real deployment can still double-sync a user across
+    # the CLI and the web app; closing that gap needs a shared (e.g. DB-
+    # backed) lock, which is out of scope here.
     if app.is_running(app.sync_running, user_id):
         print(f"sync already running for {user_id}", file=sys.stderr)
         return 3
