@@ -127,6 +127,21 @@ class TestListTags:
         monkeypatch.setenv("CATALOG_USER", "owner@example.com")
         assert "run sync_cli.py" in mcp_tools.list_tags()["notice"]
 
+    def test_list_tags_dedupes_tag_shared_by_both_columns_on_one_thread(
+            self, seeded, monkeypatch):
+        """A tag present in both ai_tags and user_tags on the same thread
+        must count that thread once, not twice — the UNION (not UNION ALL)
+        between the ai_tags pass and the user_tags pass is what guarantees
+        this."""
+        monkeypatch.setenv("CATALOG_USER", "owner@example.com")
+        db.upsert_thread(seeded, make_thread(
+            "both-cols", subject="Overlap", ai_tags=["shared"],
+            user_tags=["shared"]))
+
+        out = mcp_tools.list_tags(prefix="shared")
+
+        assert out["tags"] == [{"tag": "shared", "count": 1}]
+
 
 class TestSyncStatus:
     def test_sync_status_reports_counts_and_last_synced(self, seeded, monkeypatch):
