@@ -104,6 +104,36 @@ class TestResolveUser:
         with pytest.raises(ValueError):
             mcp_tools.resolve_user()
 
+    def test_resolve_user_rejects_catalog_user_matching_no_user(
+            self, monkeypatch, fresh_db):
+        """A CATALOG_USER that doesn't match any users.user_id row must be a
+        loud misconfiguration (ValueError), not a silent empty catalog."""
+        db.upsert_user("u1", "a@example.com", "A", "2024-01-01T00:00:00Z")
+        monkeypatch.setenv("CATALOG_USER", "nobody@example.com")
+
+        with pytest.raises(ValueError, match="no such user: nobody@example.com"):
+            mcp_tools.resolve_user()
+
+    def test_resolve_user_on_nonexistent_db_raises_no_catalog_error(
+            self, monkeypatch, tmp_path):
+        """DB_PATH pointing at a path nothing has ever written to (no file,
+        no schema) must read as "no catalog yet", not a raw
+        sqlite3.OperationalError('no such table: users')."""
+        monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "never-created.db"))
+        monkeypatch.delenv("CATALOG_USER", raising=False)
+
+        with pytest.raises(mcp_tools.NoCatalogError):
+            mcp_tools.resolve_user()
+
+    def test_resolve_user_on_schema_initialised_but_userless_db_raises_no_catalog_error(
+            self, monkeypatch, fresh_db):
+        """init_db() ran (schema exists) but nobody has signed in yet: still
+        "no catalog", not "multiple users; set CATALOG_USER"."""
+        monkeypatch.delenv("CATALOG_USER", raising=False)
+
+        with pytest.raises(mcp_tools.NoCatalogError):
+            mcp_tools.resolve_user()
+
 
 class TestProviderFor:
     def test_gmail_cache_detected_from_refresh_token_key(self, user, fresh_db):
@@ -125,10 +155,34 @@ class TestSearchCatalog:
     def test_search_returns_lean_rows_and_total(self, seeded, monkeypatch):
         monkeypatch.setenv("CATALOG_USER", "owner@example.com")
         out = mcp_tools.search_catalog(query="dentist")
-        assert set(out["threads"][0]) == {
+        row = out["threads"][0]
+        assert set(row) == {
             "thread_id", "subject", "participants", "date_first", "date_last",
             "tags", "has_attachments", "web_link"}
+        # Field shapes/types, not just key names: a prior bug left
+        # participants as a JSON-encoded string instead of a parsed list.
+        assert row["thread_id"] == "dentist"
+        assert row["subject"] == "Cleaning"
+        assert isinstance(row["participants"], list)
+        assert isinstance(row["date_first"], str)
+        assert isinstance(row["tags"], list)
+        assert isinstance(row["has_attachments"], bool)
+        assert isinstance(row["web_link"], str)
         assert out["total"] >= 1
+
+    def test_participants_parsed_into_list_not_json_string(self, seeded, monkeypatch):
+        monkeypatch.setenv("CATALOG_USER", "owner@example.com")
+        out = mcp_tools.search_catalog(query="honda")
+        assert out["threads"][0]["participants"] == [
+            "owner@example.com", "sender@example.com"]
+
+    def test_search_on_nonexistent_db_says_empty_catalog(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "never-created.db"))
+        monkeypatch.delenv("CATALOG_USER", raising=False)
+
+        out = mcp_tools.search_catalog(query="x")
+
+        assert out == {"threads": [], "total": 0, "notice": mcp_tools.EMPTY_CATALOG_NOTICE}
 
     def test_tags_merge_ai_and_user_tags_deduped(self, seeded, monkeypatch):
         monkeypatch.setenv("CATALOG_USER", "owner@example.com")
@@ -174,6 +228,13 @@ class TestListTags:
         monkeypatch.setenv("CATALOG_USER", "owner@example.com")
         assert "run sync_cli.py" in mcp_tools.list_tags()["notice"]
 
+    def test_list_tags_on_nonexistent_db_says_empty_catalog(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "never-created.db"))
+        monkeypatch.delenv("CATALOG_USER", raising=False)
+
+        assert mcp_tools.list_tags() == {
+            "tags": [], "notice": mcp_tools.EMPTY_CATALOG_NOTICE}
+
     def test_list_tags_dedupes_tag_shared_by_both_columns_on_one_thread(
             self, seeded, monkeypatch):
         """A tag present in both ai_tags and user_tags on the same thread
@@ -205,6 +266,23 @@ class TestSyncStatus:
         assert out["thread_count"] == 0
         assert out["untagged_count"] == 0
         assert out["last_synced"] is None
+        # A registered user with zero threads still gets the same empty-
+        # catalog notice the other tools use, not just zeroed counts.
+        assert out["notice"] == mcp_tools.EMPTY_CATALOG_NOTICE
+
+    def test_sync_status_on_nonexistent_db_says_empty_catalog(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "never-created.db"))
+        monkeypatch.delenv("CATALOG_USER", raising=False)
+
+        out = mcp_tools.sync_status()
+
+        assert out == {
+            "last_synced": None,
+            "thread_count": 0,
+            "untagged_count": 0,
+            "provider": "",
+            "notice": mcp_tools.EMPTY_CATALOG_NOTICE,
+        }
 
 
 class TestGetThread:
@@ -268,6 +346,39 @@ class TestGetThread:
         assert "sign" in out["error"].lower()
         assert "Catalog web app" in out["error"]
         assert not dead_provider.get_thread_calls
+
+    def test_get_thread_on_nonexistent_db_says_empty_catalog(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "never-created.db"))
+        monkeypatch.delenv("CATALOG_USER", raising=False)
+
+        out = mcp_tools.get_thread("whatever")
+
+        assert out == {"error": mcp_tools.EMPTY_CATALOG_NOTICE}
+
+    def test_get_thread_provider_network_failure_is_caught(
+            self, seeded, monkeypatch):
+        monkeypatch.setenv("CATALOG_USER", "owner@example.com")
+
+        class BoomProvider(FakeProvider):
+            def get_thread(self, access_token, thread_id):
+                raise ConnectionError("provider unreachable")
+
+        monkeypatch.setattr(mcp_tools.providers, "get", lambda name: BoomProvider())
+
+        out = mcp_tools.get_thread("car")
+
+        assert out == {"error": "provider fetch failed: provider unreachable"}
+
+    def test_get_thread_attachment_without_name_key_does_not_raise(
+            self, seeded, fake_provider, monkeypatch):
+        monkeypatch.setenv("CATALOG_USER", "owner@example.com")
+        db.upsert_thread(seeded, make_thread(
+            "no-name-attachment", subject="Odd attachment",
+            attachments=[{"size": 123}]))
+
+        out = mcp_tools.get_thread("no-name-attachment")
+
+        assert out["attachments"] == [""]
 
     def test_get_thread_truncates_at_50k_and_flags_it(
             self, seeded, monkeypatch):

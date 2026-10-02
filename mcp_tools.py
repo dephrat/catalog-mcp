@@ -10,6 +10,7 @@ wrappers in mcp_server.py) never pass a user_id.
 import json
 import os
 import re
+import sqlite3
 
 import db
 import providers
@@ -21,24 +22,43 @@ EMPTY_CATALOG_NOTICE = (
 BODY_CHAR_CAP = 50_000
 
 
+class NoCatalogError(Exception):
+    """The database has no schema yet (DB_PATH points at a nonexistent or
+    just-created file, or migrations never ran). resolve_user() raises this
+    instead of letting sqlite3's "no such table" escape, so every tool can
+    report the same empty-catalog notice a never-synced-but-initialised
+    database gets, rather than a raw OperationalError."""
+
+
 def resolve_user():
     """Figure out which user this process acts on behalf of.
 
-    CATALOG_USER (an email address) wins when set. Otherwise, a single-user
-    deployment just works: the sole row in users is used. Multiple users
-    with no CATALOG_USER set is refused rather than guessed at.
+    CATALOG_USER (an email address) wins when set, but only if it names a
+    real user — otherwise a typo'd or stale CATALOG_USER would silently read
+    as an empty catalog instead of the misconfiguration it is. With no
+    CATALOG_USER, a single-user deployment just works: the sole row in users
+    is used. Multiple users with no CATALOG_USER set is refused rather than
+    guessed at. A database with no schema (or no users) yet raises
+    NoCatalogError rather than either of the above.
     """
     env_user = os.environ.get("CATALOG_USER")
-    if env_user:
-        found = db.get_user_by_email(env_user)
-        return found["user_id"] if found else env_user
-
-    conn = db.get_db()
     try:
-        rows = conn.execute("SELECT user_id FROM users").fetchall()
-    finally:
-        conn.close()
+        if env_user:
+            found = db.get_user_by_email(env_user)
+            if found:
+                return found["user_id"]
+            raise ValueError(f"no such user: {env_user}")
 
+        conn = db.get_db()
+        try:
+            rows = conn.execute("SELECT user_id FROM users").fetchall()
+        finally:
+            conn.close()
+    except sqlite3.OperationalError:
+        raise NoCatalogError()
+
+    if not rows:
+        raise NoCatalogError()
     if len(rows) == 1:
         return rows[0]["user_id"]
     raise ValueError("multiple users; set CATALOG_USER")
@@ -84,11 +104,19 @@ def _merged_tags(row):
     return merged
 
 
+def _parse_json_list(value):
+    try:
+        parsed = json.loads(value or "[]")
+    except (ValueError, TypeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
 def _lean_row(row):
     return {
         "thread_id": row["thread_id"],
         "subject": row["subject"],
-        "participants": row["participants"],
+        "participants": _parse_json_list(row["participants"]),
         "date_first": row["date_first"],
         "date_last": row["date_last"],
         "tags": _merged_tags(row),
@@ -102,10 +130,14 @@ def search_catalog(query="", from_addr="", date_from="", date_to="",
     """Search the local tag index. Fast: local DB only, no network.
 
     Returns a lean projection of matching threads plus the total match
-    count. On an empty catalog (nothing synced yet) returns a "notice"
-    key instead of pretending there's simply nothing to find.
+    count. On an empty catalog (nothing synced yet, or no schema at all)
+    returns a "notice" key instead of pretending there's simply nothing to
+    find.
     """
-    user_id = resolve_user()
+    try:
+        user_id = resolve_user()
+    except NoCatalogError:
+        return {"threads": [], "total": 0, "notice": EMPTY_CATALOG_NOTICE}
     if db.count_threads(user_id) == 0:
         return {"threads": [], "total": 0, "notice": EMPTY_CATALOG_NOTICE}
 
@@ -129,7 +161,10 @@ def list_tags(prefix="", limit=50):
     Fast: one SQL pass over the user's threads (json_each over the merged
     ai_tags/user_tags columns), no network.
     """
-    user_id = resolve_user()
+    try:
+        user_id = resolve_user()
+    except NoCatalogError:
+        return {"tags": [], "notice": EMPTY_CATALOG_NOTICE}
     if db.count_threads(user_id) == 0:
         return {"tags": [], "notice": EMPTY_CATALOG_NOTICE}
 
@@ -165,9 +200,21 @@ def list_tags(prefix="", limit=50):
 def sync_status():
     """Report catalog health: thread/untagged counts, last sync, provider.
 
-    Fast: local DB only, no network.
+    Fast: local DB only, no network. On an empty catalog (nothing synced
+    yet, or no schema at all) also carries the same "notice" key the other
+    tools use, alongside the (zero) counts.
     """
-    user_id = resolve_user()
+    try:
+        user_id = resolve_user()
+    except NoCatalogError:
+        return {
+            "last_synced": None,
+            "thread_count": 0,
+            "untagged_count": 0,
+            "provider": "",
+            "notice": EMPTY_CATALOG_NOTICE,
+        }
+
     thread_count = db.count_threads(user_id)
     untagged_count = db.count_untagged(user_id)
 
@@ -183,12 +230,15 @@ def sync_status():
             conn.close()
         last_synced = row["m"] if row else None
 
-    return {
+    result = {
         "last_synced": last_synced,
         "thread_count": thread_count,
         "untagged_count": untagged_count,
         "provider": provider_for(user_id),
     }
+    if thread_count == 0:
+        result["notice"] = EMPTY_CATALOG_NOTICE
+    return result
 
 
 def _strip_html(text):
@@ -213,7 +263,10 @@ def get_thread(thread_id):
     instead of surfacing whatever opaque failure the provider API itself
     would raise downstream.
     """
-    user_id = resolve_user()
+    try:
+        user_id = resolve_user()
+    except NoCatalogError:
+        return {"error": EMPTY_CATALOG_NOTICE}
 
     conn = db.get_db()
     try:
@@ -229,7 +282,7 @@ def get_thread(thread_id):
         return {"error": f"no such thread: {thread_id!r}"}
 
     try:
-        attachments = [a["name"] for a in json.loads(row["attachments"] or "[]")]
+        attachments = [a.get("name", "") for a in json.loads(row["attachments"] or "[]")]
     except (ValueError, TypeError):
         attachments = []
 
@@ -242,7 +295,10 @@ def get_thread(thread_id):
                      "again via the Catalog web app."
         }
 
-    messages = provider.get_thread(access_token, thread_id)
+    try:
+        messages = provider.get_thread(access_token, thread_id)
+    except Exception as e:
+        return {"error": f"provider fetch failed: {e}"}
 
     out_messages = []
     remaining = BODY_CHAR_CAP

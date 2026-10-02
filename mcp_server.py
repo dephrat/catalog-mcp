@@ -15,17 +15,53 @@ Run with the dedicated venv, e.g.:
 Note: the installed `mcp` SDK is v2.x, where `FastMCP` was renamed to
 `MCPServer` (same decorator-based API, just a new class name).
 """
-from dotenv import load_dotenv
-from mcp.server.mcpserver import MCPServer
+import functools
+import os
+import sqlite3
 
-import mcp_tools
+from dotenv import load_dotenv
 
 load_dotenv()
+
+# db.py reads DB_PATH at import time and defaults to the relative
+# "catalog.db" — fine for the web app (always run from the repo root) but
+# wrong for an MCP client, which launches this process with its own cwd
+# (e.g. Claude Desktop uses its own working directory, not this repo). Pin
+# an absolute default next to this file *before* anything below imports
+# mcp_tools (which imports db), so a .env without DB_PATH still finds the
+# real database instead of silently opening/creating an empty one wherever
+# the client happened to start us.
+os.environ.setdefault(
+    "DB_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "catalog.db")
+)
+
+from mcp.server.mcpserver import MCPServer  # noqa: E402
+
+import mcp_tools  # noqa: E402
 
 mcp = MCPServer("catalog")
 
 
+def _tolerate_errors(fn):
+    """Turn an expected ValueError/sqlite3.Error from mcp_tools into the same
+    {"error": "..."} shape get_thread already documents, instead of letting
+    it surface as the SDK's opaque "Error executing tool X". Both are
+    expected, user-actionable conditions here — a misconfigured CATALOG_USER
+    (ValueError, e.g. "no such user" or "multiple users; set CATALOG_USER")
+    or a database problem (sqlite3.Error) — not a bug to hide a traceback
+    for.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except (ValueError, sqlite3.Error) as e:
+            return {"error": str(e)}
+    return wrapper
+
+
 @mcp.tool()
+@_tolerate_errors
 def search_catalog(query: str = "", from_addr: str = "", date_from: str = "",
                     date_to: str = "", has_attachments: bool | None = None,
                     match_any: bool = False, limit: int = 20) -> dict:
@@ -59,6 +95,7 @@ def search_catalog(query: str = "", from_addr: str = "", date_from: str = "",
 
 
 @mcp.tool()
+@_tolerate_errors
 def list_tags(prefix: str = "", limit: int = 50) -> dict:
     """List tags in use across the catalog, with counts. Fast: local index only, no network.
 
@@ -71,6 +108,7 @@ def list_tags(prefix: str = "", limit: int = 50) -> dict:
 
 
 @mcp.tool()
+@_tolerate_errors
 def sync_status() -> dict:
     """Report catalog health: thread count, untagged count, last sync, provider. Fast: local index only, no network.
 
@@ -83,6 +121,7 @@ def sync_status() -> dict:
 
 
 @mcp.tool()
+@_tolerate_errors
 def get_thread(thread_id: str) -> dict:
     """Fetch a thread's full message bodies live from the mail provider. Slow: live mailbox fetch — use on 1-3 finalists.
 

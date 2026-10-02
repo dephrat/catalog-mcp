@@ -1,4 +1,4 @@
-mcp
+mcp>=2,<3
 python-dotenv
 
 # Not used directly by mcp_server.py — pulled in because mcp_tools.py
