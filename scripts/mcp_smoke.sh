@@ -76,6 +76,30 @@ fi
 
 echo "tools/list OK: all four tools present"
 
+# Each tool must carry a non-empty outputSchema (structured output):
+# tools/list's result is a single JSON-RPC response line with id 2.
+TOOLS_LIST_RESPONSE=$(grep '"id":2' "$STDOUT" || true)
+if [ -z "$TOOLS_LIST_RESPONSE" ]; then
+    echo "smoke test FAILED: no response to tools/list" >&2
+    exit 1
+fi
+
+for TOOL in search_catalog get_thread list_tags sync_status; do
+    HAS_SCHEMA=$(echo "$TOOLS_LIST_RESPONSE" | jq -r --arg t "$TOOL" \
+        '.result.tools[] | select(.name == $t) | (.outputSchema // {} | length > 0)')
+    if [ "$HAS_SCHEMA" != "true" ]; then
+        echo "MISSING outputSchema for tool: $TOOL" >&2
+        MISSING=1
+    fi
+done
+
+if [ "$MISSING" -ne 0 ]; then
+    echo "smoke test FAILED (outputSchema)" >&2
+    exit 1
+fi
+
+echo "tools/list OK: all four tools carry a non-empty outputSchema"
+
 # ── Part 2: a real tools/call round trip ────────────────────────────────────
 # A temp, disposable database — never the real catalog.db — seeded with one
 # user and no threads, so this also exercises the empty-catalog path (see
@@ -91,12 +115,13 @@ db.upsert_user('smoke-user', '$CATALOG_USER', 'Smoke Test', '2024-01-01T00:00:00
 "
 
 SYNC_STATUS_CALL='{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"sync_status","arguments":{}}}'
+BOGUS_THREAD_CALL='{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_thread","arguments":{"thread_id":"no-such-thread-xyz"}}}'
 
 : >"$STDOUT"
 : >"$STDERR"
 
 # Same stdin-EOF race as Part 1, this time against tools/call.
-{ printf '%s\n%s\n%s\n' "$INITIALIZE" "$INITIALIZED" "$SYNC_STATUS_CALL"; sleep 1; } \
+{ printf '%s\n%s\n%s\n%s\n' "$INITIALIZE" "$INITIALIZED" "$SYNC_STATUS_CALL" "$BOGUS_THREAD_CALL"; sleep 1; } \
     | "$PYTHON" mcp_server.py >"$STDOUT" 2>"$STDERR"
 
 if [ -s "$STDERR" ]; then
@@ -124,5 +149,44 @@ if ! echo "$PAYLOAD" | jq -e 'has("thread_count")' >/dev/null; then
     exit 1
 fi
 
+# structuredContent is the SDK's separate, schema-validated echo of the same
+# payload — proves outputSchema isn't just advertised but actually populated.
+STRUCTURED_THREAD_COUNT=$(echo "$RESPONSE" | jq -r '.result.structuredContent.thread_count')
+if [ "$STRUCTURED_THREAD_COUNT" = "null" ] || [ -z "$STRUCTURED_THREAD_COUNT" ]; then
+    echo "smoke test FAILED: sync_status structuredContent missing thread_count: $RESPONSE" >&2
+    exit 1
+fi
+
 echo "tools/call OK: sync_status round trip succeeded ($(echo "$PAYLOAD" | jq -c .))"
+
+# get_thread on a bogus thread_id must surface mcp_tools' {"error": "..."}
+# shape cleanly through the SDK's own outputSchema validation, not fail as a
+# schema-validation error (Review Focus: this is the whole point of the
+# "error" key being present on every TypedDict here).
+ERROR_RESPONSE=$(grep '"id":4' "$STDOUT" || true)
+if [ -z "$ERROR_RESPONSE" ]; then
+    echo "smoke test FAILED: no response to tools/call get_thread (bogus id)" >&2
+    cat "$STDOUT" >&2
+    exit 1
+fi
+
+ERROR_IS_ERROR=$(echo "$ERROR_RESPONSE" | jq -r '.result.isError')
+if [ "$ERROR_IS_ERROR" != "false" ]; then
+    echo "smoke test FAILED: bogus get_thread should surface as a clean {\"error\":...} payload, not a tool-call error: $ERROR_RESPONSE" >&2
+    exit 1
+fi
+
+ERROR_PAYLOAD=$(echo "$ERROR_RESPONSE" | jq -r '.result.content[0].text')
+if ! echo "$ERROR_PAYLOAD" | jq -e 'has("error")' >/dev/null; then
+    echo "smoke test FAILED: bogus get_thread payload missing error key: $ERROR_PAYLOAD" >&2
+    exit 1
+fi
+
+ERROR_STRUCTURED=$(echo "$ERROR_RESPONSE" | jq -r '.result.structuredContent | has("error")')
+if [ "$ERROR_STRUCTURED" != "true" ]; then
+    echo "smoke test FAILED: bogus get_thread structuredContent missing error key: $ERROR_RESPONSE" >&2
+    exit 1
+fi
+
+echo "tools/call OK: bogus get_thread surfaced a clean error, not a schema-validation failure"
 echo "smoke test PASSED"

@@ -18,6 +18,7 @@ Note: the installed `mcp` SDK is v2.x, where `FastMCP` was renamed to
 import functools
 import os
 import sqlite3
+from typing import TypedDict
 
 from dotenv import load_dotenv
 
@@ -42,6 +43,78 @@ import mcp_tools  # noqa: E402
 mcp = MCPServer("catalog")
 
 
+# Structured-output TypedDicts, one per tool. `total=False` throughout: every
+# field here is optional because the *union* of all the shapes a given
+# mcp_tools function can actually return is what the schema has to cover —
+# the empty-catalog "notice" path, the plain success path, and (via
+# _tolerate_errors) the {"error": ...} path all go through the same
+# annotation. Shapes mirror mcp_tools.py's real return dicts exactly; see
+# that file's docstrings/_lean_row for the source of truth. mcp_tools.py
+# itself is untouched — these are purely a mirror for the SDK's
+# schema generator.
+
+class ThreadSummary(TypedDict, total=False):
+    """One lean thread projection, as produced by mcp_tools._lean_row."""
+    thread_id: str
+    subject: str
+    participants: list[str]
+    date_first: str
+    date_last: str
+    tags: list[str]
+    has_attachments: bool
+    web_link: str
+
+
+class SearchResult(TypedDict, total=False):
+    """Return shape of mcp_tools.search_catalog."""
+    threads: list[ThreadSummary]
+    total: int
+    notice: str
+    error: str
+
+
+class TagCount(TypedDict, total=False):
+    tag: str
+    count: int
+
+
+class TagsResult(TypedDict, total=False):
+    """Return shape of mcp_tools.list_tags."""
+    tags: list[TagCount]
+    notice: str
+    error: str
+
+
+class StatusResult(TypedDict, total=False):
+    """Return shape of mcp_tools.sync_status."""
+    last_synced: str | None
+    thread_count: int
+    untagged_count: int
+    provider: str
+    notice: str
+    error: str
+
+
+# "from" is a Python keyword, so this one message-shape TypedDict (used only
+# inside ThreadResult.messages) is built via the functional TypedDict form
+# instead of the class syntax every other TypedDict here uses.
+ThreadMessage = TypedDict(
+    "ThreadMessage",
+    {"from": str, "to": list[str], "date": str, "body_text": str},
+    total=False,
+)
+
+
+class ThreadResult(TypedDict, total=False):
+    """Return shape of mcp_tools.get_thread."""
+    subject: str
+    web_link: str
+    messages: list[ThreadMessage]
+    attachments: list[str]
+    truncated: bool
+    error: str
+
+
 def _tolerate_errors(fn):
     """Turn an expected ValueError/sqlite3.Error from mcp_tools into the same
     {"error": "..."} shape get_thread already documents, instead of letting
@@ -60,11 +133,11 @@ def _tolerate_errors(fn):
     return wrapper
 
 
-@mcp.tool()
+@mcp.tool(structured_output=True)
 @_tolerate_errors
 def search_catalog(query: str = "", from_addr: str = "", date_from: str = "",
                     date_to: str = "", has_attachments: bool | None = None,
-                    match_any: bool = False, limit: int = 20) -> dict:
+                    match_any: bool = False, limit: int = 20) -> SearchResult:
     """Search the local tag index for threads. Fast: local index only, no network.
 
     Use this first for almost any lookup. `query` is free-text matched
@@ -94,9 +167,9 @@ def search_catalog(query: str = "", from_addr: str = "", date_from: str = "",
     )
 
 
-@mcp.tool()
+@mcp.tool(structured_output=True)
 @_tolerate_errors
-def list_tags(prefix: str = "", limit: int = 50) -> dict:
+def list_tags(prefix: str = "", limit: int = 50) -> TagsResult:
     """List tags in use across the catalog, with counts. Fast: local index only, no network.
 
     Use this to discover what tags exist before filtering search_catalog
@@ -107,9 +180,9 @@ def list_tags(prefix: str = "", limit: int = 50) -> dict:
     return mcp_tools.list_tags(prefix=prefix, limit=limit)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=True)
 @_tolerate_errors
-def sync_status() -> dict:
+def sync_status() -> StatusResult:
     """Report catalog health: thread count, untagged count, last sync, provider. Fast: local index only, no network.
 
     Use this to sanity-check whether the catalog is populated and how
@@ -120,9 +193,9 @@ def sync_status() -> dict:
     return mcp_tools.sync_status()
 
 
-@mcp.tool()
+@mcp.tool(structured_output=True)
 @_tolerate_errors
-def get_thread(thread_id: str) -> dict:
+def get_thread(thread_id: str) -> ThreadResult:
     """Fetch a thread's full message bodies live from the mail provider. Slow: live mailbox fetch — use on 1-3 finalists.
 
     Unlike the other tools, this one makes a real network round trip to
