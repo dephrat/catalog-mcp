@@ -26,9 +26,9 @@ Built against a real 11,000-thread personal archive.
 
 ## Worked example
 
-A real `search_catalog` call against this repo's own 1,834-thread
-catalog. (`scripts/mcp_smoke.sh` speaks the same JSON-RPC shape against a
-seeded test database; this is the real one.)
+A real `search_catalog` call against this repo's own catalog (size
+below, under Indexing cost). `scripts/mcp_smoke.sh` speaks the same
+JSON-RPC shape against a seeded test database; this is the real one.
 
 Request:
 
@@ -126,8 +126,8 @@ The first-ever import of a mailbox is bounded by Gmail's per-user API
 quota, not by CPU: expect hours for a large mailbox, plus roughly $1–2
 of batch tagging. Steady-state sync is fast — a measured run against
 this repo's own mailbox synced a week-plus of new mail, including batch
-tagging, in 5m46s. The catalog behind the worked example above currently
-holds 1,834 threads, 0 untagged.
+tagging, in 5m46s. As measured after that sync, the catalog behind the
+worked example above held 1,834 threads with 0 untagged.
 
 ## What the server exposes
 
