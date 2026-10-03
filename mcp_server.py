@@ -16,6 +16,7 @@ Note: the installed `mcp` SDK is v2.x, where `FastMCP` was renamed to
 `MCPServer` (same decorator-based API, just a new class name).
 """
 import functools
+import inspect
 import json
 import os
 import sqlite3
@@ -40,6 +41,7 @@ os.environ.setdefault(
 )
 
 from mcp.server.mcpserver import MCPServer  # noqa: E402
+from mcp.server.mcpserver import Context  # noqa: E402
 
 import mcp_tools  # noqa: E402
 
@@ -126,7 +128,24 @@ def _tolerate_errors(fn):
     (ValueError, e.g. "no such user" or "multiple users; set CATALOG_USER")
     or a database problem (sqlite3.Error) — not a bug to hide a traceback
     for.
+
+    Works for both sync and async tool functions. get_thread needs to be
+    async so it can await ctx.report_progress(); the other tools stay
+    sync. The SDK decides a tool's sync/async-ness from the function
+    object's own type (inspect.iscoroutinefunction), and functools.wraps
+    only copies metadata, not that — so the branch below has to define an
+    `async def` wrapper for an async fn and a plain `def` wrapper for a
+    sync one, rather than one wrapper that awaits unconditionally.
     """
+    if inspect.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def async_wrapper(*args, **kwargs):
+            try:
+                return await fn(*args, **kwargs)
+            except (ValueError, sqlite3.Error) as e:
+                return {"error": str(e)}
+        return async_wrapper
+
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         try:
@@ -198,7 +217,7 @@ def sync_status() -> StatusResult:
 
 @mcp.tool(structured_output=True)
 @_tolerate_errors
-def get_thread(thread_id: str) -> ThreadResult:
+async def get_thread(thread_id: str, ctx: Context) -> ThreadResult:
     """Fetch a thread's full message bodies live from the mail provider. Slow: live mailbox fetch — use on 1-3 finalists.
 
     Unlike the other tools, this one makes a real network round trip to
@@ -211,8 +230,24 @@ def get_thread(thread_id: str) -> ThreadResult:
     Returns {"subject", "web_link", "messages": [...], "attachments"},
     or {"error": "..."} if the thread_id isn't found for this user or the
     provider sign-in has expired.
+
+    `ctx: Context` is SDK-injected (not a client-visible parameter — it
+    never appears in the tool's inputSchema) and is used only to report
+    progress on this slow call. Progress reporting is best-effort: a
+    client that sent no progressToken (or any other reporting hiccup)
+    must never break the actual fetch, so both report_progress calls are
+    wrapped in their own try/except.
     """
-    return mcp_tools.get_thread(thread_id)
+    try:
+        await ctx.report_progress(0, message="fetching thread from mailbox")
+    except Exception:
+        pass
+    result = mcp_tools.get_thread(thread_id)
+    try:
+        await ctx.report_progress(1, total=1, message="done")
+    except Exception:
+        pass
+    return result
 
 
 def _tolerate_errors_json(fn):

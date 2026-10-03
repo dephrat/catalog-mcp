@@ -108,6 +108,28 @@ fi
 
 echo "tools/list OK: all four tools carry a non-empty outputSchema"
 
+# get_thread gains a `ctx: Context` parameter (Task 3, progress reporting)
+# that is SDK-injected, not client-supplied — it must never show up in the
+# client-visible inputSchema. Guard: thread_id stays the only property and
+# the only required one, before and after that change.
+GET_THREAD_SCHEMA=$(echo "$TOOLS_LIST_RESPONSE" | jq -c \
+    '.result.tools[] | select(.name == "get_thread") | .inputSchema')
+if [ -z "$GET_THREAD_SCHEMA" ] || [ "$GET_THREAD_SCHEMA" = "null" ]; then
+    echo "smoke test FAILED: get_thread missing inputSchema" >&2
+    exit 1
+fi
+GET_THREAD_REQUIRED=$(echo "$GET_THREAD_SCHEMA" | jq -c '.required')
+if [ "$GET_THREAD_REQUIRED" != '["thread_id"]' ]; then
+    echo "smoke test FAILED: get_thread inputSchema.required should be [\"thread_id\"], got: $GET_THREAD_REQUIRED" >&2
+    exit 1
+fi
+GET_THREAD_PROPERTIES=$(echo "$GET_THREAD_SCHEMA" | jq -c '.properties | keys')
+if [ "$GET_THREAD_PROPERTIES" != '["thread_id"]' ]; then
+    echo "smoke test FAILED: get_thread inputSchema.properties should expose only thread_id (no SDK-injected ctx), got: $GET_THREAD_PROPERTIES" >&2
+    exit 1
+fi
+echo "tools/list OK: get_thread inputSchema exposes only thread_id (ctx not client-visible)"
+
 # resources/list must advertise the static catalog://tags resource.
 RESOURCES_LIST_RESPONSE=$(grep '"id":10' "$STDOUT" || true)
 if [ -z "$RESOURCES_LIST_RESPONSE" ]; then
