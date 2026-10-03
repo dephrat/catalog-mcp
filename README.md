@@ -240,6 +240,13 @@ using the server.
 .venv/bin/python sync_cli.py --user user@example.com  # syncs a specific account
 ```
 
+You don't have to wait for the first import to finish before searching:
+threads are stored before tagging and the database (SQLite in WAL mode)
+serves readers while the sync writes, so the MCP server answers queries
+over whatever has landed so far. While a sync is running, `sync_status`
+carries a `sync_in_progress` field with live counts so an agent can tell
+the user results may still be partial.
+
 `sync_cli.py` exits 0 on success, 1 if the sync itself failed partway through
 (see server logs / the `sync_state` table), 2 if credentials are missing or
 stale or `CATALOG_USER`/`--user` doesn't resolve to a stored user (re-sign in

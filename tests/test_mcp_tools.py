@@ -283,6 +283,24 @@ class TestSyncStatus:
         assert out["last_synced"] == "2020-06-03T00:00:00Z"
         assert out["provider"] == ""
 
+    def test_sync_status_surfaces_an_active_sync(self, seeded, monkeypatch):
+        """First-time users search WHILE the import runs; the agent learns
+        that from sync_in_progress rather than mistaking a half-built
+        catalog for a complete one."""
+        monkeypatch.setenv("CATALOG_USER", "owner@example.com")
+        db.set_sync_progress("user-under-test", 40, 118, "indexing threads")
+        out = mcp_tools.sync_status()
+        assert out["sync_in_progress"] == {
+            "status": "indexing threads", "current": 40, "total": 118}
+        assert "search already works" in out["notice"]
+
+    def test_sync_status_ignores_a_finished_sync(self, seeded, monkeypatch):
+        monkeypatch.setenv("CATALOG_USER", "owner@example.com")
+        db.set_sync_progress("user-under-test", 118, 118, "done")
+        out = mcp_tools.sync_status()
+        assert "sync_in_progress" not in out
+        assert "notice" not in out
+
     def test_sync_status_empty_catalog(self, empty_db, monkeypatch):
         monkeypatch.setenv("CATALOG_USER", "owner@example.com")
         out = mcp_tools.sync_status()

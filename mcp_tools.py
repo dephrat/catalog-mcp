@@ -247,7 +247,24 @@ def sync_status():
         "untagged_count": untagged_count,
         "provider": provider_for(user_id),
     }
-    if thread_count == 0:
+
+    # Searches work DURING a sync (threads are stored before tagging, and
+    # WAL lets readers run alongside the writer), so an in-flight sync is
+    # context for the agent, not an outage: results may be partial and
+    # tags may still be arriving.
+    progress = db.get_sync_progress(user_id)
+    if progress["status"] in db.ACTIVE_STATUSES and not progress["stale"]:
+        result["sync_in_progress"] = {
+            "status": progress["status"],
+            "current": progress["current"],
+            "total": progress["total"],
+        }
+        result["notice"] = (
+            "a sync is running right now — search already works, but "
+            "results may be incomplete and some threads are not yet tagged"
+        )
+
+    if thread_count == 0 and "notice" not in result:
         result["notice"] = EMPTY_CATALOG_NOTICE
     return result
 

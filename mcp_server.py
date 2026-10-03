@@ -99,12 +99,20 @@ class TagsResult(TypedDict, total=False):
     error: str
 
 
+class SyncInProgress(TypedDict, total=False):
+    """Live sync snapshot carried by StatusResult while a sync is running."""
+    status: str
+    current: int
+    total: int
+
+
 class StatusResult(TypedDict, total=False):
     """Return shape of mcp_tools.sync_status."""
     last_synced: str | None
     thread_count: int
     untagged_count: int
     provider: str
+    sync_in_progress: SyncInProgress
     notice: str
     error: str
 
@@ -220,6 +228,11 @@ def sync_status() -> StatusResult:
     stale it is before relying on search results, or to explain to a
     user why a search came back empty. This tool never triggers a sync
     itself — run sync_cli.py separately if the catalog needs refreshing.
+
+    If a sync is running, the result carries sync_in_progress with live
+    status and counts. Searching still works during a sync: threads are
+    stored before tagging and the database allows concurrent readers, so
+    treat results as partial rather than waiting for the sync to finish.
     """
     return mcp_tools.sync_status()
 
