@@ -6,6 +6,12 @@ Catalog is an MCP server for agent-native recall over your own email
 archive: search by whatever you actually remember about a message, not
 how it was worded.
 
+![Claude answering a half-remembered question through the catalog MCP
+server — against the fabricated demo mailbox, not real mail](bench/demo.gif)
+
+*(Recorded against the seeded demo catalog — every address and number
+above is fabricated. `bench/demo.tape` reproduces it.)*
+
 You rarely recall how a message was worded — you recall that it was
 *about the car loan*, or *from the dentist*, or *had the bank statement
 attached*. Catalog syncs a mailbox, extracts text from PDF and DOCX

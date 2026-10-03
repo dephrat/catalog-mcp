@@ -1,0 +1,10 @@
+#!/bin/bash
+# Demo wrapper: ask the fabricated demo catalog a question through the
+# catalog MCP server, exactly as a connected agent would.
+cd "$(dirname "$0")"
+export DB_PATH="$(cd .. && pwd)/demo_catalog.db"
+export CATALOG_USER="demo:local"
+exec claude < /dev/null -p "Answer using ONLY the email tools available to you. Be specific and name the email (subject + date) you based the answer on. Question: $1" \
+  --model sonnet \
+  --mcp-config demo-mcp-config.json --strict-mcp-config \
+  --allowedTools "mcp__catalog__search_catalog,mcp__catalog__get_thread,mcp__catalog__list_tags,mcp__catalog__sync_status"
