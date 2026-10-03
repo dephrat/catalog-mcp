@@ -375,11 +375,16 @@ db.upsert_user('smoke-user-2', 'two@example.com', 'Two', '2024-01-01T00:00:00Z')
 "
 
 AMBIGUOUS_TAGS_READ='{"jsonrpc":"2.0","id":9,"method":"resources/read","params":{"uri":"catalog://tags"}}'
+# Completions degrade the same way: tag_names() calls resolve_user() too, so
+# the same ambiguous-user ValueError must come back as an empty values list,
+# never a protocol-level error (there is no error slot in a completion).
+AMBIGUOUS_COMPLETE='{"jsonrpc":"2.0","id":17,"method":"completion/complete","params":{"ref":{"type":"ref/prompt","name":"find_document"},"argument":{"name":"tag","value":"any"}}}'
 
 : >"$STDOUT"
 : >"$STDERR"
 
-{ printf '%s\n%s\n%s\n' "$INITIALIZE" "$INITIALIZED" "$AMBIGUOUS_TAGS_READ"; sleep 1; } \
+{ printf '%s\n%s\n%s\n%s\n' "$INITIALIZE" "$INITIALIZED" "$AMBIGUOUS_TAGS_READ" \
+    "$AMBIGUOUS_COMPLETE"; sleep 1; } \
     | "$PYTHON" mcp_server.py >"$STDOUT" 2>"$STDERR"
 
 if [ -s "$STDERR" ]; then
@@ -403,5 +408,22 @@ if ! echo "$AMBIGUOUS_PAYLOAD" | jq -e 'has("error")' >/dev/null; then
     exit 1
 fi
 echo "resources/read OK: catalog://tags degrades to a serialized error (not a protocol-level failure) on resolve_user()'s multi-user ValueError"
+
+AMBIGUOUS_COMPLETE_RESPONSE=$(grep '"id":17' "$STDOUT" || true)
+if [ -z "$AMBIGUOUS_COMPLETE_RESPONSE" ]; then
+    echo "smoke test FAILED: no response to completion/complete (ambiguous user)" >&2
+    cat "$STDOUT" >&2
+    exit 1
+fi
+if echo "$AMBIGUOUS_COMPLETE_RESPONSE" | jq -e 'has("error")' >/dev/null; then
+    echo "smoke test FAILED: completion/complete errored at the protocol level on an ambiguous user instead of degrading to empty values: $AMBIGUOUS_COMPLETE_RESPONSE" >&2
+    exit 1
+fi
+AMBIGUOUS_COMPLETE_VALUES=$(echo "$AMBIGUOUS_COMPLETE_RESPONSE" | jq -c '.result.completion.values')
+if [ "$AMBIGUOUS_COMPLETE_VALUES" != "[]" ]; then
+    echo "smoke test FAILED: completion/complete on an ambiguous user should return empty values, got: $AMBIGUOUS_COMPLETE_RESPONSE" >&2
+    exit 1
+fi
+echo "completion/complete OK: ambiguous user degrades to empty values (not a protocol-level error)"
 
 echo "smoke test PASSED"
