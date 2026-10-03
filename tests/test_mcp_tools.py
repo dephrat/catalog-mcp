@@ -104,6 +104,13 @@ class TestResolveUser:
         with pytest.raises(ValueError):
             mcp_tools.resolve_user()
 
+    def test_resolve_user_accepts_a_literal_user_id(self, monkeypatch, fresh_db):
+        """Microsoft ids and the demo account ("demo:local") are not
+        email-shaped; CATALOG_USER naming an existing user_id must work."""
+        db.upsert_user("demo:local", "you@demo.example", "D", "2024-01-01T00:00:00Z")
+        monkeypatch.setenv("CATALOG_USER", "demo:local")
+        assert mcp_tools.resolve_user() == "demo:local"
+
     def test_resolve_user_rejects_catalog_user_matching_no_user(
             self, monkeypatch, fresh_db):
         """A CATALOG_USER that doesn't match any users.user_id row must be a

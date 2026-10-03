@@ -47,6 +47,18 @@ def resolve_user():
             found = db.get_user_by_email(env_user)
             if found:
                 return found["user_id"]
+            # Not an email we know — accept it only as a literal user_id
+            # (Microsoft ids and the demo account aren't email-shaped).
+            conn = db.get_db()
+            try:
+                row = conn.execute(
+                    "SELECT user_id FROM users WHERE user_id=?",
+                    (env_user,),
+                ).fetchone()
+            finally:
+                conn.close()
+            if row:
+                return row["user_id"]
             raise ValueError(f"no such user: {env_user}")
 
         conn = db.get_db()
