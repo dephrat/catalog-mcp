@@ -14,10 +14,17 @@ Run with the dedicated venv, e.g.:
 
 Note: the installed `mcp` SDK is v2.x, where `FastMCP` was renamed to
 `MCPServer` (same decorator-based API, just a new class name).
+
+Error-degradation rule: every surface here (tools, resources, completions)
+turns an expected ValueError or sqlite3.Error from mcp_tools into its own
+native empty-or-error shape — never a protocol-level error.
 """
 import functools
+import inspect
+import json
 import os
 import sqlite3
+from typing import TypedDict
 
 from dotenv import load_dotenv
 
@@ -36,10 +43,90 @@ os.environ.setdefault(
 )
 
 from mcp.server.mcpserver import MCPServer  # noqa: E402
+from mcp.server.mcpserver import Context  # noqa: E402
+from mcp.types import (  # noqa: E402
+    Completion,
+    CompletionArgument,
+    CompletionContext,
+    PromptReference,
+    ResourceTemplateReference,
+)
 
 import mcp_tools  # noqa: E402
 
 mcp = MCPServer("catalog")
+
+
+# Structured-output TypedDicts, one per tool. `total=False` throughout: every
+# field here is optional because the *union* of all the shapes a given
+# mcp_tools function can actually return is what the schema has to cover —
+# the empty-catalog "notice" path, the plain success path, and (via
+# _tolerate_errors) the {"error": ...} path all go through the same
+# annotation. Shapes mirror mcp_tools.py's real return dicts exactly; see
+# that file's docstrings/_lean_row for the source of truth. mcp_tools.py
+# itself is untouched — these are purely a mirror for the SDK's
+# schema generator.
+
+class ThreadSummary(TypedDict, total=False):
+    """One lean thread projection, as produced by mcp_tools._lean_row."""
+    thread_id: str
+    subject: str
+    participants: list[str]
+    date_first: str
+    date_last: str
+    tags: list[str]
+    has_attachments: bool
+    web_link: str
+
+
+class SearchResult(TypedDict, total=False):
+    """Return shape of mcp_tools.search_catalog."""
+    threads: list[ThreadSummary]
+    total: int
+    notice: str
+    error: str
+
+
+class TagCount(TypedDict, total=False):
+    tag: str
+    count: int
+
+
+class TagsResult(TypedDict, total=False):
+    """Return shape of mcp_tools.list_tags."""
+    tags: list[TagCount]
+    notice: str
+    error: str
+
+
+class StatusResult(TypedDict, total=False):
+    """Return shape of mcp_tools.sync_status."""
+    last_synced: str | None
+    thread_count: int
+    untagged_count: int
+    provider: str
+    notice: str
+    error: str
+
+
+# "from" is a Python keyword, so this one message-shape TypedDict (used only
+# inside ThreadResult.messages) is built via the functional TypedDict form
+# instead of the class syntax every other TypedDict here uses.
+ThreadMessage = TypedDict(
+    "ThreadMessage",
+    {"from": str, "to": list[str], "date": str, "body_text": str},
+    total=False,
+)
+
+
+class ThreadResult(TypedDict, total=False):
+    """Return shape of mcp_tools.get_thread."""
+    subject: str
+    web_link: str
+    messages: list[ThreadMessage]
+    attachments: list[str]
+    truncated: bool
+    error: str
 
 
 def _tolerate_errors(fn):
@@ -50,7 +137,24 @@ def _tolerate_errors(fn):
     (ValueError, e.g. "no such user" or "multiple users; set CATALOG_USER")
     or a database problem (sqlite3.Error) — not a bug to hide a traceback
     for.
+
+    Works for both sync and async tool functions. get_thread needs to be
+    async so it can await ctx.report_progress(); the other tools stay
+    sync. The SDK decides a tool's sync/async-ness from the function
+    object's own type (inspect.iscoroutinefunction), and functools.wraps
+    only copies metadata, not that — so the branch below has to define an
+    `async def` wrapper for an async fn and a plain `def` wrapper for a
+    sync one, rather than one wrapper that awaits unconditionally.
     """
+    if inspect.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def async_wrapper(*args, **kwargs):
+            try:
+                return await fn(*args, **kwargs)
+            except (ValueError, sqlite3.Error) as e:
+                return {"error": str(e)}
+        return async_wrapper
+
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         try:
@@ -60,11 +164,11 @@ def _tolerate_errors(fn):
     return wrapper
 
 
-@mcp.tool()
+@mcp.tool(structured_output=True)
 @_tolerate_errors
 def search_catalog(query: str = "", from_addr: str = "", date_from: str = "",
                     date_to: str = "", has_attachments: bool | None = None,
-                    match_any: bool = False, limit: int = 20) -> dict:
+                    match_any: bool = False, limit: int = 20) -> SearchResult:
     """Search the local tag index for threads. Fast: local index only, no network.
 
     Use this first for almost any lookup. `query` is free-text matched
@@ -94,9 +198,9 @@ def search_catalog(query: str = "", from_addr: str = "", date_from: str = "",
     )
 
 
-@mcp.tool()
+@mcp.tool(structured_output=True)
 @_tolerate_errors
-def list_tags(prefix: str = "", limit: int = 50) -> dict:
+def list_tags(prefix: str = "", limit: int = 50) -> TagsResult:
     """List tags in use across the catalog, with counts. Fast: local index only, no network.
 
     Use this to discover what tags exist before filtering search_catalog
@@ -107,9 +211,9 @@ def list_tags(prefix: str = "", limit: int = 50) -> dict:
     return mcp_tools.list_tags(prefix=prefix, limit=limit)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=True)
 @_tolerate_errors
-def sync_status() -> dict:
+def sync_status() -> StatusResult:
     """Report catalog health: thread count, untagged count, last sync, provider. Fast: local index only, no network.
 
     Use this to sanity-check whether the catalog is populated and how
@@ -120,9 +224,9 @@ def sync_status() -> dict:
     return mcp_tools.sync_status()
 
 
-@mcp.tool()
+@mcp.tool(structured_output=True)
 @_tolerate_errors
-def get_thread(thread_id: str) -> dict:
+async def get_thread(thread_id: str, ctx: Context) -> ThreadResult:
     """Fetch a thread's full message bodies live from the mail provider. Slow: live mailbox fetch — use on 1-3 finalists.
 
     Unlike the other tools, this one makes a real network round trip to
@@ -135,8 +239,120 @@ def get_thread(thread_id: str) -> dict:
     Returns {"subject", "web_link", "messages": [...], "attachments"},
     or {"error": "..."} if the thread_id isn't found for this user or the
     provider sign-in has expired.
+
+    `ctx: Context` is SDK-injected (not a client-visible parameter — it
+    never appears in the tool's inputSchema) and is used only to report
+    progress on this slow call. Progress reporting is best-effort: a
+    client that sent no progressToken (or any other reporting hiccup)
+    must never break the actual fetch, so both report_progress calls are
+    wrapped in their own try/except.
     """
-    return mcp_tools.get_thread(thread_id)
+    try:
+        await ctx.report_progress(0, total=1, message="fetching thread from mailbox")
+    except Exception:
+        pass
+    result = mcp_tools.get_thread(thread_id)
+    try:
+        await ctx.report_progress(1, total=1, message="done")
+    except Exception:
+        pass
+    return result
+
+
+def _tolerate_errors_json(fn):
+    """Resource-surface counterpart to _tolerate_errors above.
+
+    Resource handlers return a JSON *string* (not a dict the SDK serializes
+    for us), so a resolve_user() ValueError (ambiguous multi-user, no
+    CATALOG_USER set) or a sqlite3.Error has to be caught here and
+    re-serialized into the same {"error": "..."} shape the tool layer
+    produces — otherwise it would propagate past this decorator as a raised
+    exception and surface as a protocol-level INTERNAL_ERROR instead of
+    degrading the way the equivalent tool call does for the same
+    underlying condition.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except (ValueError, sqlite3.Error) as e:
+            return json.dumps({"error": str(e)})
+    return wrapper
+
+
+@mcp.resource("catalog://tags")
+@_tolerate_errors_json
+def tags_resource() -> str:
+    """Static resource mirror of list_tags(limit=200), as a JSON string.
+
+    Lets a client pull the tag vocabulary as context (e.g. to ground a
+    prompt) without making a tool call. Same read-only query as the
+    list_tags tool — just exposed as a resource too.
+    """
+    return json.dumps(mcp_tools.list_tags(limit=200))
+
+
+@mcp.resource("catalog://thread/{thread_id}")
+@_tolerate_errors_json
+def thread_resource(thread_id: str) -> str:
+    """Resource-template mirror of get_thread(thread_id), as a JSON string.
+
+    Same live-provider fetch and the same {"error": "..."} shape on an
+    unknown thread_id — serialized the same way the get_thread tool
+    returns it, not raised as a traceback.
+    """
+    return json.dumps(mcp_tools.get_thread(thread_id))
+
+
+@mcp.prompt()
+def find_document(description: str, tag: str = "") -> str:
+    """Instruction text guiding an agent to find a document in the catalog.
+
+    Tells the model to search tags-first (list_tags/search_catalog by
+    tag) before falling back to free-text search, and to only call the
+    slow get_thread tool on at most 2 finalists once narrowed down.
+    """
+    tag_hint = f" The user suggested the tag \"{tag}\" may be relevant — check it first." if tag else ""
+    return (
+        f"Find the document(s) matching this description: \"{description}\"."
+        f"{tag_hint} Use a tags-first strategy: call list_tags (optionally "
+        "with a prefix) or search_catalog filtered by tag to narrow down "
+        "candidates before trying a broad free-text search. Once you have "
+        "narrowed to at most 2 finalists, call get_thread on those 1-2 "
+        "thread_ids to confirm and read full content — get_thread is a "
+        "slow, live mailbox fetch, so don't call it on more than 2 "
+        "candidates."
+    )
+
+
+@mcp.completion()
+async def complete_argument(
+    ref: PromptReference | ResourceTemplateReference,
+    argument: CompletionArgument,
+    context: CompletionContext | None,
+) -> Completion:
+    """Complete the find_document prompt's `tag` argument from the tag index.
+
+    Scoped tightly to spec: only the prompt's `tag` argument gets
+    suggestions (via tag_names); every other ref/argument combination
+    returns an empty completion rather than guessing — a prefix matching
+    no tags is exactly as "no suggestions" as an unrecognized argument,
+    not an error either way.
+
+    tag_names() calls resolve_user() like every other mcp_tools function, so
+    a misconfigured CATALOG_USER (ambiguous multi-user database, or one that
+    names no real user) raises the same ValueError the tool/resource
+    surfaces already tolerate. A completion has no error slot in the
+    protocol, so that case degrades to an empty values list rather than a
+    protocol-level error — matching this function's own docstring above.
+    """
+    if (isinstance(ref, PromptReference) and ref.name == "find_document"
+            and argument.name == "tag"):
+        try:
+            return Completion(values=mcp_tools.tag_names(prefix=argument.value))
+        except (ValueError, sqlite3.Error):
+            return Completion(values=[])
+    return Completion(values=[])
 
 
 if __name__ == "__main__":

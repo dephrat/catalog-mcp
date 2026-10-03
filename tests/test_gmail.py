@@ -153,7 +153,7 @@ class TestHistoryChanges:
             if "/history" in url:
                 raise requests.HTTPError(response=FakeResponse(404))
             if "/profile" in url:
-                return {"emailAddress": "a@gmail.com", "historyId": "999"}
+                return {"emailAddress": "a@example.com", "historyId": "999"}
             return {"messages": [{"id": "m1", "threadId": "t1"}]}
 
         monkeypatch.setattr(gmail, "make_request", fake_request)
@@ -268,14 +268,14 @@ class TestGmailProviderBoundary:
                 "mimeType": "text/html",
                 "body": {"data": b64url(b"<p>hi</p>")},
             },
-        }, account="me@gmail.com")
+        }, account="me@example.com")
         assert normalised == {
             "id": "m1", "thread_id": "t1", "subject": "Hello",
             "from_addr": "a@example.com",
             "to_addrs": ["b@example.com", "c@example.com"],
             "date": "2024-03-01T10:00:00+00:00", "has_attachments": False,
             "body": "<p>hi</p>",
-            "web_link": "https://mail.google.com/mail/?authuser=me@gmail.com#all/m1",
+            "web_link": "https://mail.google.com/mail/?authuser=me@example.com#all/m1",
             "container_id": "INBOX",
         }
 
@@ -328,9 +328,9 @@ class TestGmailProviderBoundary:
 
     def test_identity_comes_from_the_mailbox_profile(self, monkeypatch):
         monkeypatch.setattr(gmail, "get_profile",
-                            lambda tok: {"emailAddress": "a@gmail.com", "historyId": "5"})
+                            lambda tok: {"emailAddress": "a@example.com", "historyId": "5"})
         me = providers.GmailProvider().get_identity("tok")
-        assert me == {"id": "a@gmail.com", "email": "a@gmail.com", "display_name": ""}
+        assert me == {"id": "a@example.com", "email": "a@example.com", "display_name": ""}
 
     def test_one_mailbox_wide_change_source(self):
         sources = providers.GmailProvider().list_change_sources("tok")

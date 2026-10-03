@@ -251,6 +251,29 @@ class TestListTags:
         assert out["tags"] == [{"tag": "shared", "count": 1}]
 
 
+class TestTagNames:
+    def test_tag_names_returns_names_only_matching_prefix(self, seeded, monkeypatch):
+        monkeypatch.setenv("CATALOG_USER", "owner@example.com")
+        assert mcp_tools.tag_names(prefix="de") == ["dentist"]
+
+    def test_tag_names_without_prefix_returns_all_names(self, seeded, monkeypatch):
+        monkeypatch.setenv("CATALOG_USER", "owner@example.com")
+        assert set(mcp_tools.tag_names()) == {
+            "honda", "car", "loan", "2016", "dentist", "teeth", "health"}
+
+    def test_tag_names_no_match_returns_empty_list(self, seeded, monkeypatch):
+        monkeypatch.setenv("CATALOG_USER", "owner@example.com")
+        assert mcp_tools.tag_names(prefix="zzz") == []
+
+    def test_tag_names_on_empty_catalog_returns_empty_list(self, empty_db, monkeypatch):
+        monkeypatch.setenv("CATALOG_USER", "owner@example.com")
+        assert mcp_tools.tag_names() == []
+
+    def test_tag_names_respects_limit(self, seeded, monkeypatch):
+        monkeypatch.setenv("CATALOG_USER", "owner@example.com")
+        assert len(mcp_tools.tag_names(limit=2)) == 2
+
+
 class TestSyncStatus:
     def test_sync_status_reports_counts_and_last_synced(self, seeded, monkeypatch):
         monkeypatch.setenv("CATALOG_USER", "owner@example.com")

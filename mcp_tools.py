@@ -197,6 +197,17 @@ def list_tags(prefix="", limit=50):
     return {"tags": [{"tag": r["tag"], "count": r["c"]} for r in rows]}
 
 
+def tag_names(prefix="", limit=50):
+    """Just the tag names matching prefix, for completion use.
+
+    Thin wrapper over list_tags() — same query, counts dropped. Returns
+    [] on an empty catalog or a prefix matching nothing (never raises for
+    either case, since a completion request should degrade to "no
+    suggestions" rather than surface an error).
+    """
+    return [t["tag"] for t in list_tags(prefix=prefix, limit=limit)["tags"]]
+
+
 def sync_status():
     """Report catalog health: thread/untagged counts, last sync, provider.
 
