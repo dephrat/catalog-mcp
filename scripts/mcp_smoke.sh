@@ -335,4 +335,51 @@ if [ "$COMPLETE_NO_MATCH_VALUES" != "[]" ]; then
 fi
 echo "completion/complete OK: prefix with no matching tags returned empty values"
 
+# ── Part 4: resources degrade like tools on a resolve_user() ValueError ─────
+# Two users, no CATALOG_USER set: resolve_user() raises "multiple users; set
+# CATALOG_USER" (a ValueError). The tools/call layer already turns that into
+# a clean {"error": "..."} via _tolerate_errors; the resource surface must
+# do the same via its own _tolerate_errors_json, not propagate it into a
+# protocol-level INTERNAL_ERROR.
+unset CATALOG_USER
+DB_PATH_AMBIGUOUS="$SCRATCH/catalog-ambiguous.db"
+export DB_PATH="$DB_PATH_AMBIGUOUS"
+
+"$SETUP_PYTHON" -c "
+import db
+db.init_db()
+db.upsert_user('smoke-user-1', 'one@example.com', 'One', '2024-01-01T00:00:00Z')
+db.upsert_user('smoke-user-2', 'two@example.com', 'Two', '2024-01-01T00:00:00Z')
+"
+
+AMBIGUOUS_TAGS_READ='{"jsonrpc":"2.0","id":9,"method":"resources/read","params":{"uri":"catalog://tags"}}'
+
+: >"$STDOUT"
+: >"$STDERR"
+
+{ printf '%s\n%s\n%s\n' "$INITIALIZE" "$INITIALIZED" "$AMBIGUOUS_TAGS_READ"; sleep 1; } \
+    | "$PYTHON" mcp_server.py >"$STDOUT" 2>"$STDERR"
+
+if [ -s "$STDERR" ]; then
+    echo "--- stderr (ambiguous-user resource read) ---" >&2
+    cat "$STDERR" >&2
+fi
+
+AMBIGUOUS_RESPONSE=$(grep '"id":9' "$STDOUT" || true)
+if [ -z "$AMBIGUOUS_RESPONSE" ]; then
+    echo "smoke test FAILED: no response to resources/read catalog://tags (ambiguous user)" >&2
+    cat "$STDOUT" >&2
+    exit 1
+fi
+if echo "$AMBIGUOUS_RESPONSE" | jq -e 'has("error")' >/dev/null; then
+    echo "smoke test FAILED: resources/read catalog://tags errored at the protocol level on an ambiguous user instead of degrading like the tool layer: $AMBIGUOUS_RESPONSE" >&2
+    exit 1
+fi
+AMBIGUOUS_PAYLOAD=$(echo "$AMBIGUOUS_RESPONSE" | jq -r '.result.contents[0].text')
+if ! echo "$AMBIGUOUS_PAYLOAD" | jq -e 'has("error")' >/dev/null; then
+    echo "smoke test FAILED: catalog://tags payload missing error key for ambiguous user: $AMBIGUOUS_PAYLOAD" >&2
+    exit 1
+fi
+echo "resources/read OK: catalog://tags degrades to a serialized error (not a protocol-level failure) on resolve_user()'s multi-user ValueError"
+
 echo "smoke test PASSED"

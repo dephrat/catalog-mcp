@@ -215,7 +215,29 @@ def get_thread(thread_id: str) -> ThreadResult:
     return mcp_tools.get_thread(thread_id)
 
 
+def _tolerate_errors_json(fn):
+    """Resource-surface counterpart to _tolerate_errors above.
+
+    Resource handlers return a JSON *string* (not a dict the SDK serializes
+    for us), so a resolve_user() ValueError (ambiguous multi-user, no
+    CATALOG_USER set) or a sqlite3.Error has to be caught here and
+    re-serialized into the same {"error": "..."} shape the tool layer
+    produces — otherwise it would propagate past this decorator as a raised
+    exception and surface as a protocol-level INTERNAL_ERROR instead of
+    degrading the way the equivalent tool call does for the same
+    underlying condition.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except (ValueError, sqlite3.Error) as e:
+            return json.dumps({"error": str(e)})
+    return wrapper
+
+
 @mcp.resource("catalog://tags")
+@_tolerate_errors_json
 def tags_resource() -> str:
     """Static resource mirror of list_tags(limit=200), as a JSON string.
 
@@ -227,6 +249,7 @@ def tags_resource() -> str:
 
 
 @mcp.resource("catalog://thread/{thread_id}")
+@_tolerate_errors_json
 def thread_resource(thread_id: str) -> str:
     """Resource-template mirror of get_thread(thread_id), as a JSON string.
 
