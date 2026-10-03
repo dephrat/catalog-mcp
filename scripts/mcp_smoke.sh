@@ -5,13 +5,16 @@
 # Part 1 checks that all four catalog tools show up in tools/list, plus the
 # catalog://tags resource, the catalog://thread/{thread_id} resource
 # template, and the find_document prompt show up in their respective
-# /list endpoints.
+# /list endpoints, then exercises prompts/get for find_document with and
+# without its optional `tag` argument.
 # Part 2 does real tools/call, resources/read, and completion/complete round
 # trips against a seeded temp database: it proves the server can actually
 # answer a call end to end (tools/list alone never exercises a tool handler,
 # DB_PATH resolution, or resolve_user), and specifically that a
 # freshly-seeded, never-synced catalog answers sync_status cleanly rather
-# than raising.
+# than raising. It also runs a real search_catalog query against the seeded
+# thread's own tag, and a get_thread call carrying a progressToken to prove
+# notifications/progress actually gets emitted.
 #
 # Usage: scripts/mcp_smoke.sh   (run from the repo root, or anywhere — it
 # cd's to its own repo root first)
@@ -51,6 +54,9 @@ TOOLS_LIST='{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
 RESOURCES_LIST='{"jsonrpc":"2.0","id":10,"method":"resources/list"}'
 RESOURCE_TEMPLATES_LIST='{"jsonrpc":"2.0","id":11,"method":"resources/templates/list"}'
 PROMPTS_LIST='{"jsonrpc":"2.0","id":12,"method":"prompts/list"}'
+# prompts/get, without and with the optional `tag` argument.
+PROMPT_GET_NO_TAG='{"jsonrpc":"2.0","id":13,"method":"prompts/get","params":{"name":"find_document","arguments":{"description":"the car loan doc"}}}'
+PROMPT_GET_WITH_TAG='{"jsonrpc":"2.0","id":14,"method":"prompts/get","params":{"name":"find_document","arguments":{"description":"the car loan doc","tag":"carloan"}}}'
 
 # The trailing `sleep` keeps stdin open a beat after the last request.
 # Redirecting stdout to a regular file (instead of a tty or a pipe straight
@@ -59,8 +65,9 @@ PROMPTS_LIST='{"jsonrpc":"2.0","id":12,"method":"prompts/list"}'
 # response handling and drop a reply before it's flushed — tools/list is
 # slow enough to lose that race under plain `prog < input`, even though it
 # looks instantaneous when piped straight to a terminal.
-{ printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$INITIALIZE" "$INITIALIZED" "$TOOLS_LIST" \
-    "$RESOURCES_LIST" "$RESOURCE_TEMPLATES_LIST" "$PROMPTS_LIST"; sleep 1; } \
+{ printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$INITIALIZE" "$INITIALIZED" "$TOOLS_LIST" \
+    "$RESOURCES_LIST" "$RESOURCE_TEMPLATES_LIST" "$PROMPTS_LIST" \
+    "$PROMPT_GET_NO_TAG" "$PROMPT_GET_WITH_TAG"; sleep 1; } \
     | "$PYTHON" mcp_server.py >"$STDOUT" 2>"$STDERR"
 
 cat "$STDOUT"
@@ -172,6 +179,43 @@ if [ "$HAS_FIND_DOCUMENT" != "find_document" ]; then
 fi
 echo "prompts/list OK: find_document present"
 
+# prompts/get without `tag`: message text must be non-empty and must not
+# claim a tag was suggested.
+PROMPT_NO_TAG_RESPONSE=$(grep '"id":13' "$STDOUT" || true)
+if [ -z "$PROMPT_NO_TAG_RESPONSE" ]; then
+    echo "smoke test FAILED: no response to prompts/get find_document (no tag)" >&2
+    cat "$STDOUT" >&2
+    exit 1
+fi
+PROMPT_NO_TAG_TEXT=$(echo "$PROMPT_NO_TAG_RESPONSE" | jq -r '.result.messages[0].content.text')
+if [ -z "$PROMPT_NO_TAG_TEXT" ] || [ "$PROMPT_NO_TAG_TEXT" = "null" ]; then
+    echo "smoke test FAILED: prompts/get find_document (no tag) returned empty message text" >&2
+    exit 1
+fi
+if echo "$PROMPT_NO_TAG_TEXT" | grep -q "carloan"; then
+    echo "smoke test FAILED: prompts/get find_document (no tag) mentioned a tag it was never given" >&2
+    exit 1
+fi
+echo "prompts/get OK: find_document without tag returned non-empty message text"
+
+# prompts/get with `tag`: the supplied tag must appear in the message text.
+PROMPT_WITH_TAG_RESPONSE=$(grep '"id":14' "$STDOUT" || true)
+if [ -z "$PROMPT_WITH_TAG_RESPONSE" ]; then
+    echo "smoke test FAILED: no response to prompts/get find_document (with tag)" >&2
+    cat "$STDOUT" >&2
+    exit 1
+fi
+PROMPT_WITH_TAG_TEXT=$(echo "$PROMPT_WITH_TAG_RESPONSE" | jq -r '.result.messages[0].content.text')
+if [ -z "$PROMPT_WITH_TAG_TEXT" ] || [ "$PROMPT_WITH_TAG_TEXT" = "null" ]; then
+    echo "smoke test FAILED: prompts/get find_document (with tag) returned empty message text" >&2
+    exit 1
+fi
+if ! echo "$PROMPT_WITH_TAG_TEXT" | grep -q "carloan"; then
+    echo "smoke test FAILED: prompts/get find_document (with tag) did not mention the supplied tag: $PROMPT_WITH_TAG_TEXT" >&2
+    exit 1
+fi
+echo "prompts/get OK: find_document with tag included the supplied tag in the message text"
+
 # ── Part 2: a real tools/call round trip ────────────────────────────────────
 # A temp, disposable database — never the real catalog.db — seeded with one
 # user and no threads, so this also exercises the empty-catalog path (see
@@ -211,14 +255,23 @@ TAGS_RESOURCE_READ='{"jsonrpc":"2.0","id":5,"method":"resources/read","params":{
 BOGUS_THREAD_RESOURCE_READ='{"jsonrpc":"2.0","id":6,"method":"resources/read","params":{"uri":"catalog://thread/no-such-thread-xyz"}}'
 COMPLETE_SEEDED_TAG='{"jsonrpc":"2.0","id":7,"method":"completion/complete","params":{"ref":{"type":"ref/prompt","name":"find_document"},"argument":{"name":"tag","value":"smoketag"}}}'
 COMPLETE_NO_MATCH_TAG='{"jsonrpc":"2.0","id":8,"method":"completion/complete","params":{"ref":{"type":"ref/prompt","name":"find_document"},"argument":{"name":"tag","value":"zzz"}}}'
+# A real search against the seeded thread's own tag, to prove search_catalog
+# finds what was actually stored, not just that it answers without erroring.
+SEARCH_SEEDED_THREAD='{"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"search_catalog","arguments":{"query":"smoketagvalue"}}}'
+# get_thread carrying a progressToken: report_progress is a no-op unless the
+# caller asked for progress (see Context.report_progress), so proving a
+# notifications/progress line actually appears needs a call like this one —
+# the bogus-id call above never requests progress and is fine to leave as is.
+GET_THREAD_WITH_PROGRESS='{"jsonrpc":"2.0","id":16,"method":"tools/call","params":{"name":"get_thread","arguments":{"thread_id":"no-such-thread-xyz"},"_meta":{"progressToken":"smoke-progress-1"}}}'
 
 : >"$STDOUT"
 : >"$STDERR"
 
 # Same stdin-EOF race as Part 1, this time against tools/call.
-{ printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$INITIALIZE" "$INITIALIZED" \
+{ printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$INITIALIZE" "$INITIALIZED" \
     "$SYNC_STATUS_CALL" "$BOGUS_THREAD_CALL" "$TAGS_RESOURCE_READ" \
-    "$BOGUS_THREAD_RESOURCE_READ" "$COMPLETE_SEEDED_TAG" "$COMPLETE_NO_MATCH_TAG"; sleep 1; } \
+    "$BOGUS_THREAD_RESOURCE_READ" "$COMPLETE_SEEDED_TAG" "$COMPLETE_NO_MATCH_TAG" \
+    "$SEARCH_SEEDED_THREAD" "$GET_THREAD_WITH_PROGRESS"; sleep 1; } \
     | "$PYTHON" mcp_server.py >"$STDOUT" 2>"$STDERR"
 
 if [ -s "$STDERR" ]; then
@@ -356,6 +409,32 @@ if [ "$COMPLETE_NO_MATCH_VALUES" != "[]" ]; then
     exit 1
 fi
 echo "completion/complete OK: prefix with no matching tags returned empty values"
+
+# search_catalog against the smoke DB must find the one seeded thread by its
+# own tag, and structuredContent must carry the real thread_id (not just
+# some well-shaped echo).
+SEARCH_RESPONSE=$(grep '"id":15' "$STDOUT" || true)
+if [ -z "$SEARCH_RESPONSE" ]; then
+    echo "smoke test FAILED: no response to tools/call search_catalog" >&2
+    cat "$STDOUT" >&2
+    exit 1
+fi
+SEARCH_THREAD_ID=$(echo "$SEARCH_RESPONSE" | jq -r '.result.structuredContent.threads[0].thread_id')
+if [ "$SEARCH_THREAD_ID" != "smoke-thread-1" ]; then
+    echo "smoke test FAILED: search_catalog structuredContent.threads[0].thread_id should be smoke-thread-1, got: $SEARCH_RESPONSE" >&2
+    exit 1
+fi
+echo "tools/call OK: search_catalog found the seeded thread (thread_id=smoke-thread-1)"
+
+# get_thread with a client-supplied progressToken must emit at least one
+# notifications/progress line (report_progress is a no-op without one).
+PROGRESS_LINES=$(grep -c '"method":"notifications/progress"' "$STDOUT" || true)
+if [ "$PROGRESS_LINES" -lt 1 ]; then
+    echo "smoke test FAILED: get_thread with a progressToken produced no notifications/progress line" >&2
+    cat "$STDOUT" >&2
+    exit 1
+fi
+echo "tools/call OK: get_thread with a progressToken emitted $PROGRESS_LINES notifications/progress line(s)"
 
 # ── Part 4: resources degrade like tools on a resolve_user() ValueError ─────
 # Two users, no CATALOG_USER set: resolve_user() raises "multiple users; set
