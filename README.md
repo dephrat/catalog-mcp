@@ -46,24 +46,24 @@ repo:
     {
       "thread_id": "19e84881f8ee5bab",
       "subject": "Ontario Business Registry Notice: Important Information Regarding Your Business Number Information",
-      "participants": ["dan.ephrat@gmail.com", "daniel@ephrat.ai", "notify@example.ontario.ca"],
+      "participants": ["you@example.com", "daniel@ephrat.ai", "notify@example.ontario.ca"],
       "date_first": "2026-06-01T18:52:53+00:00",
       "date_last": "2026-06-02T21:56:27+00:00",
       "tags": ["ontario business registry", "business number", "compliance",
                "serviceontario", "registration", "incorporation"],
       "has_attachments": false,
-      "web_link": "https://mail.google.com/mail/?authuser=dan.ephrat@gmail.com#all/19e84881f8ee5bab"
+      "web_link": "https://mail.google.com/mail/?authuser=you@example.com#all/19e84881f8ee5bab"
     },
     {
       "thread_id": "19e6a3c7bd55418f",
       "subject": "EPHRAT AI [BIN REDACTED] Registration of Sole Proprietorship",
-      "participants": ["registry@example.ontario.ca", "dan.ephrat@gmail.com", "daniel@ephrat.ai"],
+      "participants": ["registry@example.ontario.ca", "you@example.com", "daniel@ephrat.ai"],
       "date_first": "2026-05-27T16:20:08+00:00",
       "date_last": "2026-06-02T05:42:06+00:00",
       "tags": ["business registration", "sole proprietorship", "ontario",
                "certificate", "business registry", "renewal", "incorporation"],
       "has_attachments": false,
-      "web_link": "https://mail.google.com/mail/?authuser=dan.ephrat@gmail.com#all/19e6a3c7bd55418f"
+      "web_link": "https://mail.google.com/mail/?authuser=you@example.com#all/19e6a3c7bd55418f"
     }
   ],
   "total": 7
@@ -85,16 +85,16 @@ Response — body text trimmed, identifying numbers redacted:
 ```json
 {
   "subject": "EPHRAT AI [BIN REDACTED] Registration of Sole Proprietorship",
-  "web_link": "https://mail.google.com/mail/?authuser=dan.ephrat@gmail.com#all/19e6a3c7bd55418f",
+  "web_link": "https://mail.google.com/mail/?authuser=you@example.com#all/19e6a3c7bd55418f",
   "messages": [
     {
       "from": "registry@example.ontario.ca",
-      "to": ["dan.ephrat@gmail.com"],
+      "to": ["you@example.com"],
       "date": "2026-05-27T16:20:08+00:00",
       "body_text": "Entity Name: EPHRAT AI  BIN: [redacted]  Transaction Number: [redacted]  Dear ..."
     },
     {
-      "from": "dan.ephrat@gmail.com",
+      "from": "you@example.com",
       "to": ["daniel@ephrat.ai"],
       "date": "2026-06-02T05:42:06+00:00",
       "body_text": "---------- Forwarded message --------- From: <registry@example.ontario.ca> ..."
