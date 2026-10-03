@@ -14,6 +14,10 @@ Run with the dedicated venv, e.g.:
 
 Note: the installed `mcp` SDK is v2.x, where `FastMCP` was renamed to
 `MCPServer` (same decorator-based API, just a new class name).
+
+Error-degradation rule: every surface here (tools, resources, completions)
+turns an expected ValueError or sqlite3.Error from mcp_tools into its own
+native empty-or-error shape — never a protocol-level error.
 """
 import functools
 import inspect
@@ -322,7 +326,11 @@ def find_document(description: str, tag: str = "") -> str:
 
 
 @mcp.completion()
-async def complete_argument(ref, argument, context):
+async def complete_argument(
+    ref: PromptReference | ResourceTemplateReference,
+    argument: CompletionArgument,
+    context: CompletionContext | None,
+) -> Completion:
     """Complete the find_document prompt's `tag` argument from the tag index.
 
     Scoped tightly to spec: only the prompt's `tag` argument gets
@@ -330,10 +338,20 @@ async def complete_argument(ref, argument, context):
     returns an empty completion rather than guessing — a prefix matching
     no tags is exactly as "no suggestions" as an unrecognized argument,
     not an error either way.
+
+    tag_names() calls resolve_user() like every other mcp_tools function, so
+    a misconfigured CATALOG_USER (ambiguous multi-user database, or one that
+    names no real user) raises the same ValueError the tool/resource
+    surfaces already tolerate. A completion has no error slot in the
+    protocol, so that case degrades to an empty values list rather than a
+    protocol-level error — matching this function's own docstring above.
     """
     if (isinstance(ref, PromptReference) and ref.name == "find_document"
             and argument.name == "tag"):
-        return Completion(values=mcp_tools.tag_names(prefix=argument.value))
+        try:
+            return Completion(values=mcp_tools.tag_names(prefix=argument.value))
+        except (ValueError, sqlite3.Error):
+            return Completion(values=[])
     return Completion(values=[])
 
 
