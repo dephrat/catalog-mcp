@@ -40,3 +40,8 @@ HANDOFF.md
 
 # OS
 .DS_Store
+
+# Benchmark artifacts carry real mailbox contents and personal ground truth
+bench/results.jsonl
+bench/questions.json
+bench/mcp-*.json

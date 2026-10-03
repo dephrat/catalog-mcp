@@ -1,0 +1,8 @@
+[
+  {
+    "id": "q1_example",
+    "question": "What's my business registration number?",
+    "expect_any": ["<the number, as ground truth>"],
+    "truth_thread": "<thread id prefix, for manual checking>"
+  }
+]
