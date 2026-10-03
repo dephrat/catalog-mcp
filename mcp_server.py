@@ -248,7 +248,7 @@ async def get_thread(thread_id: str, ctx: Context) -> ThreadResult:
     wrapped in their own try/except.
     """
     try:
-        await ctx.report_progress(0, message="fetching thread from mailbox")
+        await ctx.report_progress(0, total=1, message="fetching thread from mailbox")
     except Exception:
         pass
     result = mcp_tools.get_thread(thread_id)
