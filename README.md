@@ -2,86 +2,150 @@
 
 [![ci](https://github.com/dephrat/catalog/actions/workflows/ci.yml/badge.svg)](https://github.com/dephrat/catalog/actions/workflows/ci.yml)
 
-Search your own email by whatever you actually remember about it.
+Catalog is an MCP server for agent-native recall over your own email
+archive: search by whatever you actually remember about a message, not
+how it was worded.
 
-You rarely recall how a message was worded — you recall that it was *about the
-car loan*, or *from the dentist*, or *had the bank statement attached*. Catalog
-syncs a mailbox, extracts text from PDF and DOCX attachments, and has an LLM
-generate search tags for every thread: topics, names, organisations, document
-types, synonyms, plausible misspellings. Then it lets you search those.
+You rarely recall how a message was worded — you recall that it was
+*about the car loan*, or *from the dentist*, or *had the bank statement
+attached*. Catalog syncs a mailbox, extracts text from PDF and DOCX
+attachments, and has an LLM generate search tags for every thread:
+topics, names, organisations, document types, synonyms, plausible
+misspellings. It then serves that tag index to any MCP-compatible
+client — Claude Code, Claude Desktop, or your own agent — as four tools
+with structured output, two resources, a prompt, and completions.
 
-On top of the tag index sits **Detective**, an agentic loop for the case where
-you can't remember enough to search directly. You describe what you're looking
-for in prose; it runs parallel queries, reads the results, follows leads it
-finds in them, and either surfaces the thread or explains where the document
-probably is and who to ask.
+On top of the same index sits a web app, with an agentic search loop
+called Detective for the case where you can't remember enough to search
+directly. That story — how the tagging pipeline works, the web UI,
+backups, access control — is further down.
 
 Built against a real 11,000-thread personal archive.
 
 ---
 
-## How it works
+## Worked example
 
-```
-Graph delta feed ──▶ changed thread ids
-                         │
-                         ▼
-                  refetch whole threads ──▶ extract bodies + attachments
-                                                      │
-                                                      ▼
-                                            Claude Haiku (batched)
-                                                      │
-                                                      ▼
-                                            SQLite: threads + tags
-                                                   │        │
-                                        filtered search   Detective loop
+A real `search_catalog` call against this repo's own 1,834-thread
+catalog. (`scripts/mcp_smoke.sh` speaks the same JSON-RPC shape against a
+seeded test database; this is the real one.)
+
+Request:
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_catalog","arguments":{"query":"registration ontario","limit":5}}}
 ```
 
-**Sync is incremental.** Each mail folder has a delta cursor; a re-sync fetches
-only what changed. Delta is used as a *change detector* rather than a data
-source — it reports which conversations moved, then those conversations are
-refetched in full, so thread reconstruction always sees complete context. On a
-real mailbox this is the difference between re-reading 11k threads and reading
-about nine.
+Response — trimmed to two of the seven real matches; the business
+number in the subject/tags is redacted below since this is a public
+repo:
 
-A folder's cursor only advances once the threads it reported are in the
-database. Moving it earlier is the one unrecoverable mistake available here:
-the next scan would simply never mention that mail again. Re-reading a folder
-costs one delta call and nothing else, so when a sync fails anywhere before
-storage, every cursor is held and the next run re-reads.
+```json
+{
+  "threads": [
+    {
+      "thread_id": "19e84881f8ee5bab",
+      "subject": "Ontario Business Registry Notice: Important Information Regarding Your Business Number Information",
+      "participants": ["dan.ephrat@gmail.com", "daniel@ephrat.ai", "notify@example.ontario.ca"],
+      "date_first": "2026-06-01T18:52:53+00:00",
+      "date_last": "2026-06-02T21:56:27+00:00",
+      "tags": ["ontario business registry", "business number", "compliance",
+               "serviceontario", "registration", "incorporation"],
+      "has_attachments": false,
+      "web_link": "https://mail.google.com/mail/?authuser=dan.ephrat@gmail.com#all/19e84881f8ee5bab"
+    },
+    {
+      "thread_id": "19e6a3c7bd55418f",
+      "subject": "EPHRAT AI [BIN REDACTED] Registration of Sole Proprietorship",
+      "participants": ["registry@example.ontario.ca", "dan.ephrat@gmail.com", "daniel@ephrat.ai"],
+      "date_first": "2026-05-27T16:20:08+00:00",
+      "date_last": "2026-06-02T05:42:06+00:00",
+      "tags": ["business registration", "sole proprietorship", "ontario",
+               "certificate", "business registry", "renewal", "incorporation"],
+      "has_attachments": false,
+      "web_link": "https://mail.google.com/mail/?authuser=dan.ephrat@gmail.com#all/19e6a3c7bd55418f"
+    }
+  ],
+  "total": 7
+}
+```
 
-**Tagging is batched.** A first-time import goes through Anthropic's Message
-Batches API at half price. Threads are stored *before* tagging, so a large
-import is searchable by subject and sender within minutes while tags fill in
-behind it. Small incremental syncs stay on the real-time API, where the saving
-is pennies and the latency is not.
+Narrowed to one finalist, `get_thread` fetches it live from the mailbox
+— the one tool that hits the network; everything above came from the
+local index:
 
-**Providers are abstracted.** Change detection is modelled as *sources with
-cursors*, not folders with tokens, because Microsoft Graph exposes a delta feed
-per folder while Gmail exposes one mailbox-wide history feed. A provider
-needing a single cursor returns a single source. Messages are normalised at the
-provider boundary so nothing above it knows which mail API it is talking to.
+Request:
 
-## Detective
+```json
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_thread","arguments":{"thread_id":"19e6a3c7bd55418f"}}}
+```
 
-A prose description goes in; the loop runs up to 20 rounds, each issuing three
-queries in parallel with independent filters. Results are merged, deduplicated
-and summarised back into the conversation, so round *n+1* reasons over
-everything found so far. It terminates when the model concludes, when queries
-run dry, or at the round cap.
+Response — body text trimmed, identifying numbers redacted:
 
-The system prompt and the growing history are cached across rounds, which
-matters: history is resent from the top every round, so cost grows
-quadratically without it.
+```json
+{
+  "subject": "EPHRAT AI [BIN REDACTED] Registration of Sole Proprietorship",
+  "web_link": "https://mail.google.com/mail/?authuser=dan.ephrat@gmail.com#all/19e6a3c7bd55418f",
+  "messages": [
+    {
+      "from": "registry@example.ontario.ca",
+      "to": ["dan.ephrat@gmail.com"],
+      "date": "2026-05-27T16:20:08+00:00",
+      "body_text": "Entity Name: EPHRAT AI  BIN: [redacted]  Transaction Number: [redacted]  Dear ..."
+    },
+    {
+      "from": "dan.ephrat@gmail.com",
+      "to": ["daniel@ephrat.ai"],
+      "date": "2026-06-02T05:42:06+00:00",
+      "body_text": "---------- Forwarded message --------- From: <registry@example.ontario.ca> ..."
+    }
+  ],
+  "attachments": []
+}
+```
+
+That's the whole loop an agent runs: a fast local search to narrow
+candidates, then one live fetch to confirm.
+
+## Benchmark
+
+catalog vs. a raw-Gmail MCP server, same 8 questions, same model
+(Sonnet), same harness (`bench/run.py`), hand-graded:
+
+| | hit rate | mean wall time | median wall time | cost/question |
+|---|---|---|---|---|
+| catalog | 7/8 | 14.8s | 12.7s | ~$0.08 |
+| raw Gmail | 4/8 (3 partial) | 21.8s | 17.0s | ~$0.06 |
+
+n=8, one model, one mailbox, and the index covers June 2026 onward —
+small enough to call a direction, not a proof.
+
+## Indexing cost
+
+The first-ever import of a mailbox is bounded by Gmail's per-user API
+quota, not by CPU: expect hours for a large mailbox, plus roughly $1–2
+of batch tagging. Steady-state sync is fast — a measured run against
+this repo's own mailbox synced a week-plus of new mail, including batch
+tagging, in 5m46s. The catalog behind the worked example above currently
+holds 1,834 threads, 0 untagged.
+
+## What the server exposes
+
+- **Tools** — `search_catalog`, `list_tags`, `sync_status`, `get_thread`,
+  each advertising a structured `outputSchema` (and a matching
+  `structuredContent` echo on every call), not a bare text blob.
+- **Resources** — `catalog://tags` (the tag vocabulary, static) and
+  `catalog://thread/{thread_id}` (a resource-template mirror of
+  `get_thread`), so a client can pull context without a tool call.
+- **Prompt** — `find_document(description, tag="")`, a user-invocable
+  template that instructs the model to search tags-first and reserve
+  `get_thread` for at most two finalists.
+- **Completions** — the `find_document` prompt's `tag` argument
+  autocompletes from the live tag index.
+- **Progress** — `get_thread`, the one tool that makes a live network
+  call, reports progress before and after the fetch.
 
 ## MCP server
-
-Catalog exposes the tag index to agent platforms as a read-only MCP server.
-Four tools — `search_catalog`, `list_tags`, `sync_status`, `get_thread` — let
-an agent search fast (local index only), list tags, check catalog health, or
-fetch full thread content live on 1–3 finalists. The server is agent-native:
-it works the same whether called from Claude Code, Claude Desktop, or any
-MCP-compatible client.
 
 ### Setup: a dedicated venv
 
@@ -174,7 +238,70 @@ via the web app), or 3 if a sync already looks to be running for that account
 app's own `/sync` route trusts, so this also catches a sync the web app
 started in a different process.
 
-## Performance
+---
+
+## The web app
+
+Everything below is how the catalog actually gets built, and how a
+human (rather than an agent) browses it directly: the sync pipeline, the
+Detective loop, the Flask UI, backups, access control. The MCP server
+above is read-only and depends on this having been run at least once.
+
+### How it works
+
+```
+Graph delta feed ──▶ changed thread ids
+                         │
+                         ▼
+                  refetch whole threads ──▶ extract bodies + attachments
+                                                      │
+                                                      ▼
+                                            Claude Haiku (batched)
+                                                      │
+                                                      ▼
+                                            SQLite: threads + tags
+                                                   │        │
+                                        filtered search   Detective loop
+```
+
+**Sync is incremental.** Each mail folder has a delta cursor; a re-sync fetches
+only what changed. Delta is used as a *change detector* rather than a data
+source — it reports which conversations moved, then those conversations are
+refetched in full, so thread reconstruction always sees complete context. On a
+real mailbox this is the difference between re-reading 11k threads and reading
+about nine.
+
+A folder's cursor only advances once the threads it reported are in the
+database. Moving it earlier is the one unrecoverable mistake available here:
+the next scan would simply never mention that mail again. Re-reading a folder
+costs one delta call and nothing else, so when a sync fails anywhere before
+storage, every cursor is held and the next run re-reads.
+
+**Tagging is batched.** A first-time import goes through Anthropic's Message
+Batches API at half price. Threads are stored *before* tagging, so a large
+import is searchable by subject and sender within minutes while tags fill in
+behind it. Small incremental syncs stay on the real-time API, where the saving
+is pennies and the latency is not.
+
+**Providers are abstracted.** Change detection is modelled as *sources with
+cursors*, not folders with tokens, because Microsoft Graph exposes a delta feed
+per folder while Gmail exposes one mailbox-wide history feed. A provider
+needing a single cursor returns a single source. Messages are normalised at the
+provider boundary so nothing above it knows which mail API it is talking to.
+
+### Detective
+
+A prose description goes in; the loop runs up to 20 rounds, each issuing three
+queries in parallel with independent filters. Results are merged, deduplicated
+and summarised back into the conversation, so round *n+1* reasons over
+everything found so far. It terminates when the model concludes, when queries
+run dry, or at the round cap.
+
+The system prompt and the growing history are cached across rounds, which
+matters: history is resent from the top every round, so cost grows
+quadratically without it.
+
+### Performance
 
 Measured on the 11,000-thread corpus, p50 / p95 over 30 runs:
 
@@ -210,7 +337,7 @@ immediately rather than waiting out its timeout.
 Results are capped at 200 per page. Before that cap, a broad query took 3.7s —
 not from the query, but from serialising and rendering every match.
 
-## Try it in one minute
+### Try it in one minute
 
 ```bash
 python -m venv venv && source venv/bin/activate
@@ -233,7 +360,7 @@ script with the flag, and gunicorn rejects unknown arguments, so a worker
 cannot start with `--demo` and no environment variable can switch it on. It
 also writes to its own `demo_catalog.db`, never a real catalog.
 
-## Setup with a real mailbox
+### Setup with a real mailbox
 
 ```bash
 cp .env.example .env      # then fill it in
@@ -248,7 +375,7 @@ every variable, including which Azure field is which — the client secret is th
 `ADMIN_EMAIL` is required. Access control is fail-closed: with it unset, nobody
 can sign in, including you.
 
-### Gmail
+#### Gmail
 
 Gmail is a second provider behind the same abstraction; sign in at
 `/login?provider=gmail` (the plain `/login` stays Microsoft, the default
@@ -271,14 +398,14 @@ mailbox-wide history feed; Gmail only retains history for about a week, so a
 long pause between syncs triggers an automatic full re-enumeration — cheap,
 because unchanged threads are dropped before tagging.
 
-## Tests
+### Tests
 
 ```bash
 pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-374 tests, no network: the mail providers, the Anthropic client and the Graph
+379 tests, no network: the mail providers, the Anthropic client and the Graph
 and Gmail transports are all stubbed, so the suite runs offline in about fifteen seconds.
 CI runs the suite plus both secret scans (tracked files and full history) on
 every push — the pre-commit hook only protects clones that opted in via
@@ -294,7 +421,7 @@ suite works.
 The sync tests drive `run_sync` through the provider interface rather than
 through Graph, so a second provider inherits them.
 
-## Spending
+### Spending
 
 Tagging and Detective cost money, and it is the operator's money regardless of
 whose mailbox is being indexed. Approval is binary — it says who may sign in,
@@ -311,7 +438,7 @@ Measured figures, so the number can be chosen rather than guessed: an
 11.6k-thread mailbox costs about **$6.65** to tag through the Batch API, or
 **$14.31** in real time; a Detective session runs **$0.10–0.30**.
 
-## Backups
+### Backups
 
 ```bash
 python backup.py                  # take one, keeping the last 7
@@ -338,7 +465,7 @@ itself recoverable. Snapshots land beside the database by default, which
 covers a bad import or a wipe; pass `--dir`, or copy them elsewhere, to cover
 losing the disk.
 
-## Access control
+### Access control
 
 Catalog is multi-tenant — each signed-in account gets an isolated catalog — so a
 public deployment would otherwise let anyone index their mailbox on the
@@ -354,7 +481,7 @@ callback URL carrying the attacker's authorisation code, and the victim ends
 up holding a session bound to someone else's mailbox — indexing it on the
 operator's key.
 
-## Operational notes
+### Operational notes
 
 A few things this handles because they actually happened:
 
@@ -372,7 +499,7 @@ A few things this handles because they actually happened:
 - Catalogs export and import with tags intact, so moving one between machines
   costs nothing instead of re-running the tagger.
 
-## Secret scanning
+### Secret scanning
 
 `scripts/check_secrets.py` blocks secrets and real mailbox data at commit time.
 It reads file *bytes* rather than diffs, because a vim swap file is binary: git
@@ -386,8 +513,7 @@ python scripts/check_secrets.py --history  # every blob in every commit
 python scripts/check_secrets.py --tree DIR --strict   # a publish candidate
 ```
 
-
-## Limitations
+### Limitations
 
 - Substring matching, not full-text search. No stemming, no ranking.
 - No pagination beyond the 200-result cap.
