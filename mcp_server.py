@@ -16,9 +16,12 @@ Note: the installed `mcp` SDK is v2.x, where `FastMCP` was renamed to
 `MCPServer` (same decorator-based API, just a new class name).
 """
 import functools
+import json
 import os
 import sqlite3
 from typing import TypedDict
+
+from mcp_types import Completion, PromptReference
 
 from dotenv import load_dotenv
 
@@ -210,6 +213,65 @@ def get_thread(thread_id: str) -> ThreadResult:
     provider sign-in has expired.
     """
     return mcp_tools.get_thread(thread_id)
+
+
+@mcp.resource("catalog://tags")
+def tags_resource() -> str:
+    """Static resource mirror of list_tags(limit=200), as a JSON string.
+
+    Lets a client pull the tag vocabulary as context (e.g. to ground a
+    prompt) without making a tool call. Same read-only query as the
+    list_tags tool — just exposed as a resource too.
+    """
+    return json.dumps(mcp_tools.list_tags(limit=200))
+
+
+@mcp.resource("catalog://thread/{thread_id}")
+def thread_resource(thread_id: str) -> str:
+    """Resource-template mirror of get_thread(thread_id), as a JSON string.
+
+    Same live-provider fetch and the same {"error": "..."} shape on an
+    unknown thread_id — serialized the same way the get_thread tool
+    returns it, not raised as a traceback.
+    """
+    return json.dumps(mcp_tools.get_thread(thread_id))
+
+
+@mcp.prompt()
+def find_document(description: str, tag: str = "") -> str:
+    """Instruction text guiding an agent to find a document in the catalog.
+
+    Tells the model to search tags-first (list_tags/search_catalog by
+    tag) before falling back to free-text search, and to only call the
+    slow get_thread tool on at most 2 finalists once narrowed down.
+    """
+    tag_hint = f" The user suggested the tag \"{tag}\" may be relevant — check it first." if tag else ""
+    return (
+        f"Find the document(s) matching this description: \"{description}\"."
+        f"{tag_hint} Use a tags-first strategy: call list_tags (optionally "
+        "with a prefix) or search_catalog filtered by tag to narrow down "
+        "candidates before trying a broad free-text search. Once you have "
+        "narrowed to at most 2 finalists, call get_thread on those 1-2 "
+        "thread_ids to confirm and read full content — get_thread is a "
+        "slow, live mailbox fetch, so don't call it on more than 2 "
+        "candidates."
+    )
+
+
+@mcp.completion()
+async def complete_argument(ref, argument, context):
+    """Complete the find_document prompt's `tag` argument from the tag index.
+
+    Scoped tightly to spec: only the prompt's `tag` argument gets
+    suggestions (via tag_names); every other ref/argument combination
+    returns an empty completion rather than guessing — a prefix matching
+    no tags is exactly as "no suggestions" as an unrecognized argument,
+    not an error either way.
+    """
+    if (isinstance(ref, PromptReference) and ref.name == "find_document"
+            and argument.name == "tag"):
+        return Completion(values=mcp_tools.tag_names(prefix=argument.value))
+    return Completion(values=[])
 
 
 if __name__ == "__main__":

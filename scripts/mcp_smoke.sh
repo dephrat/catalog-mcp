@@ -2,12 +2,16 @@
 # Smoke test for mcp_server.py: speaks real JSON-RPC over stdio (no agent
 # involved).
 #
-# Part 1 checks that all four catalog tools show up in tools/list.
-# Part 2 does one real tools/call round trip against a seeded temp database:
-# it proves the server can actually answer a call end to end (tools/list
-# alone never exercises a tool handler, DB_PATH resolution, or resolve_user),
-# and specifically that a freshly-seeded, never-synced catalog answers
-# sync_status cleanly rather than raising.
+# Part 1 checks that all four catalog tools show up in tools/list, plus the
+# catalog://tags resource, the catalog://thread/{thread_id} resource
+# template, and the find_document prompt show up in their respective
+# /list endpoints.
+# Part 2 does real tools/call, resources/read, and completion/complete round
+# trips against a seeded temp database: it proves the server can actually
+# answer a call end to end (tools/list alone never exercises a tool handler,
+# DB_PATH resolution, or resolve_user), and specifically that a
+# freshly-seeded, never-synced catalog answers sync_status cleanly rather
+# than raising.
 #
 # Usage: scripts/mcp_smoke.sh   (run from the repo root, or anywhere — it
 # cd's to its own repo root first)
@@ -42,8 +46,11 @@ trap 'rm -rf "$SCRATCH"' EXIT
 STDOUT="$SCRATCH/stdout"
 STDERR="$SCRATCH/stderr"
 
-# ── Part 1: tools/list ───────────────────────────────────────────────────────
+# ── Part 1: tools/list, resources/list, resources/templates/list, prompts/list ─
 TOOLS_LIST='{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+RESOURCES_LIST='{"jsonrpc":"2.0","id":10,"method":"resources/list"}'
+RESOURCE_TEMPLATES_LIST='{"jsonrpc":"2.0","id":11,"method":"resources/templates/list"}'
+PROMPTS_LIST='{"jsonrpc":"2.0","id":12,"method":"prompts/list"}'
 
 # The trailing `sleep` keeps stdin open a beat after the last request.
 # Redirecting stdout to a regular file (instead of a tty or a pipe straight
@@ -52,7 +59,8 @@ TOOLS_LIST='{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
 # response handling and drop a reply before it's flushed — tools/list is
 # slow enough to lose that race under plain `prog < input`, even though it
 # looks instantaneous when piped straight to a terminal.
-{ printf '%s\n%s\n%s\n' "$INITIALIZE" "$INITIALIZED" "$TOOLS_LIST"; sleep 1; } \
+{ printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$INITIALIZE" "$INITIALIZED" "$TOOLS_LIST" \
+    "$RESOURCES_LIST" "$RESOURCE_TEMPLATES_LIST" "$PROMPTS_LIST"; sleep 1; } \
     | "$PYTHON" mcp_server.py >"$STDOUT" 2>"$STDERR"
 
 cat "$STDOUT"
@@ -100,6 +108,48 @@ fi
 
 echo "tools/list OK: all four tools carry a non-empty outputSchema"
 
+# resources/list must advertise the static catalog://tags resource.
+RESOURCES_LIST_RESPONSE=$(grep '"id":10' "$STDOUT" || true)
+if [ -z "$RESOURCES_LIST_RESPONSE" ]; then
+    echo "smoke test FAILED: no response to resources/list" >&2
+    exit 1
+fi
+HAS_TAGS_RESOURCE=$(echo "$RESOURCES_LIST_RESPONSE" | jq -r \
+    '.result.resources[] | select(.uri == "catalog://tags") | .uri')
+if [ "$HAS_TAGS_RESOURCE" != "catalog://tags" ]; then
+    echo "smoke test FAILED: resources/list missing catalog://tags: $RESOURCES_LIST_RESPONSE" >&2
+    exit 1
+fi
+echo "resources/list OK: catalog://tags present"
+
+# resources/templates/list must advertise the thread template.
+TEMPLATES_LIST_RESPONSE=$(grep '"id":11' "$STDOUT" || true)
+if [ -z "$TEMPLATES_LIST_RESPONSE" ]; then
+    echo "smoke test FAILED: no response to resources/templates/list" >&2
+    exit 1
+fi
+HAS_THREAD_TEMPLATE=$(echo "$TEMPLATES_LIST_RESPONSE" | jq -r \
+    '.result.resourceTemplates[] | select(.uriTemplate == "catalog://thread/{thread_id}") | .uriTemplate')
+if [ "$HAS_THREAD_TEMPLATE" != "catalog://thread/{thread_id}" ]; then
+    echo "smoke test FAILED: resources/templates/list missing catalog://thread/{thread_id}: $TEMPLATES_LIST_RESPONSE" >&2
+    exit 1
+fi
+echo "resources/templates/list OK: catalog://thread/{thread_id} present"
+
+# prompts/list must advertise find_document.
+PROMPTS_LIST_RESPONSE=$(grep '"id":12' "$STDOUT" || true)
+if [ -z "$PROMPTS_LIST_RESPONSE" ]; then
+    echo "smoke test FAILED: no response to prompts/list" >&2
+    exit 1
+fi
+HAS_FIND_DOCUMENT=$(echo "$PROMPTS_LIST_RESPONSE" | jq -r \
+    '.result.prompts[] | select(.name == "find_document") | .name')
+if [ "$HAS_FIND_DOCUMENT" != "find_document" ]; then
+    echo "smoke test FAILED: prompts/list missing find_document: $PROMPTS_LIST_RESPONSE" >&2
+    exit 1
+fi
+echo "prompts/list OK: find_document present"
+
 # ── Part 2: a real tools/call round trip ────────────────────────────────────
 # A temp, disposable database — never the real catalog.db — seeded with one
 # user and no threads, so this also exercises the empty-catalog path (see
@@ -112,16 +162,41 @@ export CATALOG_USER="smoke-test@example.com"
 import db
 db.init_db()
 db.upsert_user('smoke-user', '$CATALOG_USER', 'Smoke Test', '2024-01-01T00:00:00Z')
+db.upsert_thread('smoke-user', {
+    'thread_id': 'smoke-thread-1',
+    'message_ids': [{'id': 'm1', 'web_link': '', 'date': '2024-03-01',
+                      'has_attachments': False}],
+    'subject': 'Smoke test thread',
+    'participants': ['smoke-test@example.com', 'sender@example.com'],
+    'date_first': '2024-03-01T10:00:00Z',
+    'date_last': '2024-03-01T10:00:00Z',
+    'has_attachments': 0,
+    'attachments': [],
+    'web_link': '',
+    'ai_tags': ['smoketagvalue'],
+    'user_tags': [],
+    'manually_reviewed': 0,
+    'last_synced': '2024-03-01T10:00:00Z',
+    'body_char_count': 12,
+    'body_scan_status': 'ok',
+    'tags_truncated': 0,
+})
 "
 
 SYNC_STATUS_CALL='{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"sync_status","arguments":{}}}'
 BOGUS_THREAD_CALL='{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_thread","arguments":{"thread_id":"no-such-thread-xyz"}}}'
+TAGS_RESOURCE_READ='{"jsonrpc":"2.0","id":5,"method":"resources/read","params":{"uri":"catalog://tags"}}'
+BOGUS_THREAD_RESOURCE_READ='{"jsonrpc":"2.0","id":6,"method":"resources/read","params":{"uri":"catalog://thread/no-such-thread-xyz"}}'
+COMPLETE_SEEDED_TAG='{"jsonrpc":"2.0","id":7,"method":"completion/complete","params":{"ref":{"type":"ref/prompt","name":"find_document"},"argument":{"name":"tag","value":"smoketag"}}}'
+COMPLETE_NO_MATCH_TAG='{"jsonrpc":"2.0","id":8,"method":"completion/complete","params":{"ref":{"type":"ref/prompt","name":"find_document"},"argument":{"name":"tag","value":"zzz"}}}'
 
 : >"$STDOUT"
 : >"$STDERR"
 
 # Same stdin-EOF race as Part 1, this time against tools/call.
-{ printf '%s\n%s\n%s\n%s\n' "$INITIALIZE" "$INITIALIZED" "$SYNC_STATUS_CALL" "$BOGUS_THREAD_CALL"; sleep 1; } \
+{ printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$INITIALIZE" "$INITIALIZED" \
+    "$SYNC_STATUS_CALL" "$BOGUS_THREAD_CALL" "$TAGS_RESOURCE_READ" \
+    "$BOGUS_THREAD_RESOURCE_READ" "$COMPLETE_SEEDED_TAG" "$COMPLETE_NO_MATCH_TAG"; sleep 1; } \
     | "$PYTHON" mcp_server.py >"$STDOUT" 2>"$STDERR"
 
 if [ -s "$STDERR" ]; then
@@ -189,4 +264,75 @@ if [ "$ERROR_STRUCTURED" != "true" ]; then
 fi
 
 echo "tools/call OK: bogus get_thread surfaced a clean error, not a schema-validation failure"
+
+# ── Part 3: resources/read and completion/complete ──────────────────────────
+
+TAGS_READ_RESPONSE=$(grep '"id":5' "$STDOUT" || true)
+if [ -z "$TAGS_READ_RESPONSE" ]; then
+    echo "smoke test FAILED: no response to resources/read catalog://tags" >&2
+    cat "$STDOUT" >&2
+    exit 1
+fi
+TAGS_READ_PAYLOAD=$(echo "$TAGS_READ_RESPONSE" | jq -r '.result.contents[0].text')
+if ! echo "$TAGS_READ_PAYLOAD" | jq -e 'has("tags")' >/dev/null; then
+    echo "smoke test FAILED: catalog://tags payload missing tags key: $TAGS_READ_PAYLOAD" >&2
+    exit 1
+fi
+HAS_SMOKETAG=$(echo "$TAGS_READ_PAYLOAD" | jq -r '[.tags[].tag] | index("smoketagvalue") != null')
+if [ "$HAS_SMOKETAG" != "true" ]; then
+    echo "smoke test FAILED: catalog://tags missing seeded tag: $TAGS_READ_PAYLOAD" >&2
+    exit 1
+fi
+echo "resources/read OK: catalog://tags returned known-shape JSON with the seeded tag"
+
+# Review Focus: an unknown thread id must come back as the same serialized
+# {"error": "..."} shape the tool gives, not a traceback.
+BOGUS_READ_RESPONSE=$(grep '"id":6' "$STDOUT" || true)
+if [ -z "$BOGUS_READ_RESPONSE" ]; then
+    echo "smoke test FAILED: no response to resources/read catalog://thread/bogus" >&2
+    cat "$STDOUT" >&2
+    exit 1
+fi
+if echo "$BOGUS_READ_RESPONSE" | jq -e 'has("error")' >/dev/null; then
+    echo "smoke test FAILED: resources/read catalog://thread/bogus errored at the protocol level (expected a serialized {\"error\":...} payload instead): $BOGUS_READ_RESPONSE" >&2
+    exit 1
+fi
+BOGUS_READ_PAYLOAD=$(echo "$BOGUS_READ_RESPONSE" | jq -r '.result.contents[0].text')
+if ! echo "$BOGUS_READ_PAYLOAD" | jq -e 'has("error")' >/dev/null; then
+    echo "smoke test FAILED: catalog://thread/bogus payload missing error key: $BOGUS_READ_PAYLOAD" >&2
+    exit 1
+fi
+echo "resources/read OK: catalog://thread/<unknown-id> returned a serialized error, not a traceback"
+
+COMPLETE_SEEDED_RESPONSE=$(grep '"id":7' "$STDOUT" || true)
+if [ -z "$COMPLETE_SEEDED_RESPONSE" ]; then
+    echo "smoke test FAILED: no response to completion/complete (seeded tag prefix)" >&2
+    cat "$STDOUT" >&2
+    exit 1
+fi
+COMPLETE_SEEDED_VALUES=$(echo "$COMPLETE_SEEDED_RESPONSE" | jq -c '.result.completion.values')
+if ! echo "$COMPLETE_SEEDED_VALUES" | jq -e 'index("smoketagvalue") != null' >/dev/null; then
+    echo "smoke test FAILED: completion/complete did not return the seeded tag: $COMPLETE_SEEDED_RESPONSE" >&2
+    exit 1
+fi
+echo "completion/complete OK: seeded tag prefix returned smoketagvalue"
+
+# Review Focus: a prefix matching no tags must return empty values, not an error.
+COMPLETE_NO_MATCH_RESPONSE=$(grep '"id":8' "$STDOUT" || true)
+if [ -z "$COMPLETE_NO_MATCH_RESPONSE" ]; then
+    echo "smoke test FAILED: no response to completion/complete (no-match prefix)" >&2
+    cat "$STDOUT" >&2
+    exit 1
+fi
+if echo "$COMPLETE_NO_MATCH_RESPONSE" | jq -e 'has("error")' >/dev/null; then
+    echo "smoke test FAILED: completion/complete with a no-match prefix returned a protocol error instead of empty values: $COMPLETE_NO_MATCH_RESPONSE" >&2
+    exit 1
+fi
+COMPLETE_NO_MATCH_VALUES=$(echo "$COMPLETE_NO_MATCH_RESPONSE" | jq -c '.result.completion.values')
+if [ "$COMPLETE_NO_MATCH_VALUES" != "[]" ]; then
+    echo "smoke test FAILED: completion/complete with prefix 'zzz' should return empty values: $COMPLETE_NO_MATCH_RESPONSE" >&2
+    exit 1
+fi
+echo "completion/complete OK: prefix with no matching tags returned empty values"
+
 echo "smoke test PASSED"
