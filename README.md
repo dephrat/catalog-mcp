@@ -1,6 +1,6 @@
 # Catalog
 
-[![ci](https://github.com/dephrat/catalog/actions/workflows/ci.yml/badge.svg)](https://github.com/dephrat/catalog/actions/workflows/ci.yml)
+[![ci](https://github.com/dephrat/catalog-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/dephrat/catalog-mcp/actions/workflows/ci.yml)
 
 Catalog is an MCP server for agent-native recall over your own email
 archive: search by whatever you actually remember about a message, not
@@ -13,14 +13,19 @@ attachments, and has an LLM generate search tags for every thread:
 topics, names, organisations, document types, synonyms, plausible
 misspellings. It then serves that tag index to any MCP-compatible
 client — Claude Code, Claude Desktop, or your own agent — as four tools
-with structured output, two resources, a prompt, and completions.
+with structured output, a static resource and a resource template, a
+prompt, and completions.
 
 On top of the same index sits a web app, with an agentic search loop
 called Detective for the case where you can't remember enough to search
 directly. That story — how the tagging pipeline works, the web UI,
 backups, access control — is further down.
 
-Built against a real 11,000-thread personal archive.
+Built against a real 11,000-thread personal archive. That archive (a
+Microsoft/Graph mailbox) is what the search layer itself was built and
+latency-benchmarked against (see Performance, below); the worked example
+and the 7/8 agent benchmark just below run against a separate, smaller
+1,834-thread Gmail catalog instead.
 
 ---
 
@@ -117,8 +122,9 @@ catalog vs. a raw-Gmail MCP server, same 8 questions, same model
 | catalog | 7/8 | 14.8s | 12.7s | ~$0.08 |
 | raw Gmail | 4/8 (3 partial) | 21.8s | 17.0s | ~$0.06 |
 
-n=8, one model, one mailbox, and the index covers June 2026 onward —
-small enough to call a direction, not a proof.
+n=8, one model, one mailbox, and the index covers mid-2026 onward (a
+handful of threads earlier) — small enough to call a direction, not a
+proof.
 
 ## Indexing cost
 
@@ -215,7 +221,11 @@ accesses. If unset, the server assumes a single-user deployment and uses the
 sole user in the database. If multiple users are stored and `CATALOG_USER` is
 not set, the affected tool calls return `{"error": "multiple users; set
 CATALOG_USER"}` — the server process itself keeps running either way, since
-each tool call resolves the user independently.
+each tool call resolves the user independently. Resources degrade the same
+way, returning the same `{"error": ...}` shape serialized into their JSON
+body instead of a protocol-level failure; completions have no error slot in
+the protocol, so the same misconfiguration just returns an empty values
+list instead.
 
 ### Design: read-only, no sync trigger
 
