@@ -22,8 +22,6 @@ import os
 import sqlite3
 from typing import TypedDict
 
-from mcp_types import Completion, PromptReference
-
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -42,6 +40,13 @@ os.environ.setdefault(
 
 from mcp.server.mcpserver import MCPServer  # noqa: E402
 from mcp.server.mcpserver import Context  # noqa: E402
+from mcp.types import (  # noqa: E402
+    Completion,
+    CompletionArgument,
+    CompletionContext,
+    PromptReference,
+    ResourceTemplateReference,
+)
 
 import mcp_tools  # noqa: E402
 
