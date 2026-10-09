@@ -2063,7 +2063,9 @@ if __name__ == "__main__":
     # so the default fails to bind on a stock Mac — which is the first thing a
     # new clone runs.
     app.run(
-        host="127.0.0.1",
+        # Localhost by default; HOST=0.0.0.0 for a container where the
+        # reverse proxy is the one doing the exposing.
+        host=os.getenv("HOST", "127.0.0.1"),
         port=int(os.getenv("PORT", "5000")),
         debug=bool(os.getenv("FLASK_DEBUG")),
     )
