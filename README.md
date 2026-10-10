@@ -449,7 +449,10 @@ allows; you can instead pick the start date per account.
 Widening is additive. Existing threads and tags are kept; saving an earlier
 date (or "all") discards the folder cursors so the next scan re-walks the
 mailbox and adds only the older mail. Saving the same date again, or a later
-one, changes nothing about the cursors. Microsoft accounts don't have this
+one, changes nothing about the cursors, with one exception: if no range was
+ever recorded but a cursor already exists, the first save re-walks the
+mailbox once, because the previous window is unknown and is treated as
+widening. Microsoft accounts don't have this
 setting.
 
 ### Tests
@@ -459,7 +462,7 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-379 tests, no network: the mail providers, the Anthropic client and the Graph
+431 tests, no network: the mail providers, the Anthropic client and the Graph
 and Gmail transports are all stubbed, so the suite runs offline in about fifteen seconds.
 CI runs the suite plus both secret scans (tracked files and full history) on
 every push — the pre-commit hook only protects clones that opted in via

@@ -304,6 +304,38 @@ def test_since_while_running_exits_3_before_storing(gmail_user):
     assert db.has_delta_links(user_id) and calls == []
 
 
+def test_since_without_credentials_exits_2_and_stores_nothing(gmail_user, monkeypatch, capsys):
+    """Exit 2 for missing credentials must leave the stored window and the
+    folder cursors exactly as they were, even when --since would widen."""
+    user_id, email, calls = gmail_user
+    db.set_sync_after(user_id, "2024-06-01")
+    db.set_delta_link(user_id, "INBOX", "cursor")
+    db.set_token_cache(user_id, None)
+    assert sync_cli.main(["--user", email, "--since", "2023-01-01"]) == 2
+    assert "no stored credentials" in capsys.readouterr().err
+    assert db.get_sync_after(user_id) == "2024-06-01"
+    assert db.get_delta_link(user_id, "INBOX") == "cursor"
+    assert calls == []
+
+
+def test_since_unset_when_credentials_missing(gmail_user):
+    user_id, email, calls = gmail_user
+    db.set_token_cache(user_id, None)
+    assert sync_cli.main(["--user", email, "--since", "all"]) == 2
+    assert db.get_sync_after(user_id) is None and calls == []
+
+
+def test_since_with_expired_refresh_stores_nothing(gmail_user, monkeypatch):
+    user_id, email, calls = gmail_user
+    db.set_sync_after(user_id, "2024-06-01")
+    db.set_delta_link(user_id, "INBOX", "cursor")
+    monkeypatch.setattr(providers, "get", lambda n: FakeProvider(access_token=None))
+    assert sync_cli.main(["--user", email, "--since", "2023-01-01"]) == 2
+    assert db.get_sync_after(user_id) == "2024-06-01"
+    assert db.get_delta_link(user_id, "INBOX") == "cursor"
+    assert calls == []
+
+
 def test_since_non_gmail_exits_2(seeded, monkeypatch, capsys):
     user_id, email = seeded
     monkeypatch.setattr(providers, "get", lambda n: FakeProvider())

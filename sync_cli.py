@@ -94,15 +94,6 @@ def main(argv=None):
         print(f"sync already running for {user_id}", file=sys.stderr)
         return 3
 
-    if since is not None:
-        if mcp_tools.provider_for(user_id) != "gmail":
-            print("--since is gmail-only", file=sys.stderr)
-            return 2
-        widening = app.range_change_widens(user_id, since)
-        db.set_sync_after(user_id, since)
-        if widening:
-            db.clear_delta_links(user_id)
-
     token_cache = db.get_token_cache(user_id)
     if not token_cache:
         print(
@@ -121,6 +112,16 @@ def main(argv=None):
             file=sys.stderr,
         )
         return 2
+
+    if since is not None:
+        if mcp_tools.provider_for(user_id) != "gmail":
+            print("--since is gmail-only", file=sys.stderr)
+            return 2
+        widening = app.range_change_widens(user_id, since)
+        db.set_sync_after(user_id, since)
+        if widening:
+            db.clear_delta_links(user_id)
+
     if new_cache and new_cache != token_cache:
         db.set_token_cache(user_id, new_cache)
 
