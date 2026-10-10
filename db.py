@@ -521,6 +521,27 @@ def _set_state(conn, user_id, key, value):
     )
 
 
+def set_sync_after(user_id, value):
+    """Per-user Gmail sync window start: "YYYY-MM-DD", or "" for everything."""
+    conn = get_db()
+    _set_state(conn, user_id, "sync_after", value)
+    conn.commit()
+    conn.close()
+
+
+def get_sync_after(user_id):
+    """None = never chosen; "" = everything; otherwise a YYYY-MM-DD date."""
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT value FROM sync_state WHERE user_id=? AND key='sync_after'",
+            (user_id,)
+        ).fetchone()
+        return row["value"] if row else None
+    finally:
+        conn.close()
+
+
 def set_sync_flag(user_id, value):
     conn = get_db()
     _set_state(conn, user_id, "stop", value)

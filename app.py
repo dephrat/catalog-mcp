@@ -485,6 +485,15 @@ def strip_html(text):
     return text
 
 
+def _window_query(user_id):
+    """Per-user Gmail window as a search query: None (unset, env default
+    applies), "" (everything), or "after:YYYY/MM/DD"."""
+    after = db.get_sync_after(user_id)
+    if after is None or after == "":
+        return after
+    return "after:" + after.replace("-", "/")
+
+
 def detect_changes(user_id, provider, get_token):
     """Walk every folder's delta feed and return the conversations that changed.
 
@@ -510,6 +519,10 @@ def detect_changes(user_id, provider, get_token):
     scanned = [0]
     lock = threading.Lock()
 
+    window = _window_query(user_id)
+    # Only passed when set, so providers without a window are called as before.
+    extra = {} if window is None else {"sync_query": window}
+
     def scan_folder(folder):
         if db.get_sync_flag(user_id) == "1":
             return
@@ -517,7 +530,7 @@ def detect_changes(user_id, provider, get_token):
         stored_link = db.get_delta_link(user_id, folder["id"])
         try:
             changed, removed, new_link, full_resync = provider.changes_for_source(
-                get_token(), folder["id"], stored_link
+                get_token(), folder["id"], stored_link, **extra
             )
         except Exception as e:
             # One bad folder shouldn't abort the whole sync; its token is left
