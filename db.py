@@ -721,6 +721,17 @@ def set_delta_link(user_id, folder_id, delta_link):
     conn.close()
 
 
+def has_delta_links(user_id):
+    conn = get_db()
+    try:
+        return conn.execute(
+            "SELECT 1 FROM sync_state WHERE user_id=? AND key LIKE 'delta:%' LIMIT 1",
+            (user_id,)
+        ).fetchone() is not None
+    finally:
+        conn.close()
+
+
 def clear_delta_links(user_id):
     """Force the next sync to re-establish every folder token from scratch."""
     conn = get_db()

@@ -72,12 +72,33 @@ class TestRange:
         assert r.get_json()["full_rewalk_next_scan"] is True
         assert db.get_delta_link(user, "f1") is None
 
-    def test_unset_without_env_to_everything_is_not_widening(self, user, monkeypatch):
+    def test_unknown_prior_window_with_cursor_everything_widens(self, user, monkeypatch):
         c = _client(user, monkeypatch)
         _links(user)
         r = c.post("/sync/range", json={"after": ""})
-        assert r.get_json()["full_rewalk_next_scan"] is False
+        assert r.get_json() == {"stored": True, "full_rewalk_next_scan": True}
+        assert db.get_delta_link(user, "f1") is None
+
+    def test_unknown_prior_window_with_cursor_date_widens(self, user, monkeypatch):
+        c = _client(user, monkeypatch)
+        _links(user)
+        r = c.post("/sync/range", json={"after": "2024-01-01"})
+        assert r.get_json()["full_rewalk_next_scan"] is True
+        assert db.get_delta_link(user, "f1") is None
+
+    def test_resaving_identical_value_is_noop(self, user, monkeypatch):
+        c = _client(user, monkeypatch)
+        db.set_sync_after(user, "2024-01-01")
+        _links(user)
+        r = c.post("/sync/range", json={"after": "2024-01-01"})
+        assert r.get_json() == {"stored": True, "full_rewalk_next_scan": False}
         assert db.get_delta_link(user, "f1") == "cursor"
+
+    def test_unknown_prior_window_without_cursor_does_not_rewalk(self, user, monkeypatch):
+        c = _client(user, monkeypatch)
+        r = c.post("/sync/range", json={"after": ""})
+        assert r.get_json() == {"stored": True, "full_rewalk_next_scan": False}
+        assert db.get_sync_after(user) == ""
 
     def test_widen_during_running_sync_is_409_and_changes_nothing(self, user, monkeypatch):
         c = _client(user, monkeypatch)
