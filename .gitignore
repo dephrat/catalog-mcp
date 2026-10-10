@@ -45,3 +45,4 @@ HANDOFF.md
 bench/results.jsonl
 bench/questions.json
 bench/mcp-*.json
+bench/questions2.json

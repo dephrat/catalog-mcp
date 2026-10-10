@@ -60,7 +60,14 @@ def run_one(question, condition):
     except ValueError:
         data = {"result": proc.stdout, "parse_error": True, "stderr": proc.stderr[-2000:]}
     answer = data.get("result") or ""
-    hit = any(s.lower() in answer.lower() for s in question["expect_any"])
+    # An infrastructure failure is not a wrong answer. Scoring "Credit
+    # balance is too low" as a miss poisoned a third of one grid.
+    error_markers = ("Credit balance", "Not logged in", "API Error",
+                     "overloaded_error")
+    invalid = any(m.lower() in answer.lower() for m in error_markers) or \
+        (data.get("num_turns") == 1 and not answer)
+    hit = (not invalid) and any(
+        s.lower() in answer.lower() for s in question["expect_any"])
     return {
         "qid": question["id"], "condition": condition,
         "wall_s": round(wall, 1),
@@ -68,6 +75,7 @@ def run_one(question, condition):
         "cost_usd": data.get("total_cost_usd"),
         "duration_api_ms": data.get("duration_api_ms"),
         "hit": hit,
+        "invalid": invalid,
         "answer": answer[:1500],
     }
 

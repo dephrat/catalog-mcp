@@ -120,17 +120,28 @@ candidates, then one live fetch to confirm.
 
 ## Benchmark
 
-catalog vs. a raw-Gmail MCP server, same 8 questions, same model
-(Sonnet), same harness (`bench/run.py`), hand-graded:
+catalog vs. a raw-Gmail MCP control, same model (Sonnet), same harness.
+v2: 24 questions stratified by specificity (12 keyword-recoverable, 12
+circumstantial-recall), 3 repeats per cell, 144 runs:
 
-| | hit rate | mean wall time | median wall time | cost/question |
+| | precise acc | vague acc | precise time | vague time |
 |---|---|---|---|---|
-| catalog | 7/8 | 14.8s | 12.7s | ~$0.08 |
-| raw Gmail | 4/8 (3 partial) | 21.8s | 17.0s | ~$0.06 |
+| catalog | 89% | 86% | 17.6s | 21.8s |
+| raw Gmail | 78% | 72% | 15.2s | **39.1s** |
 
-n=8, one model, one mailbox, and the index covers mid-2026 onward (a
-handful of threads earlier) — small enough to call a direction, not a
-proof.
+The earlier 8-question run suggested "nearly double the accuracy"; the
+larger stratified run does not support that — the accuracy edge is real
+but modest. What survives repeats: on vague recall catalog is ~45%
+faster (the control burns rounds flailing through keyword search), far
+more consistent (the control's vague failures are 0/3 flails; catalog
+never scored 0/3 on a precise question), and the eval surfaced
+catalog's honest limitation — the index answers from its last sync,
+while raw Gmail sees this morning's mail.
+
+The eval's own failures and fixes (scored login errors as data, convicted
+a correct answer, stale ground truth) are documented in
+[bench/EVAL.md](bench/EVAL.md). Still: one model, one mailbox, questions
+authored by the index's owner.
 
 ## Indexing cost
 
