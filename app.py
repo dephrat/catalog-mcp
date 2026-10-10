@@ -1666,8 +1666,13 @@ def sync_range_preview():
     url = f"{gmail.GMAIL_BASE}/messages?maxResults=1&includeSpamTrash=false"
     if after:
         url += f"&q={quote('after:' + after.replace('-', '/'))}"
-    data = gmail.make_request(gmail.get_headers(get_fresh_token()), url)
-    est = int(data.get("resultSizeEstimate", 0))
+    try:
+        data = gmail.make_request(gmail.get_headers(get_fresh_token()), url)
+        est = int(data.get("resultSizeEstimate", 0))
+    except AuthExpired:
+        return jsonify({"error": f"{current_provider().label} sign-in expired — sign in again"}), 401
+    except Exception:
+        return jsonify({"error": "gmail did not answer — try again"}), 502
     return jsonify({"estimated_threads": est,
                     "estimated_tagging_usd": round(est * 0.0006, 2),
                     "note": "estimate"})

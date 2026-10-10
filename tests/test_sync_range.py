@@ -173,3 +173,25 @@ class TestRangeTemplate:
         monkeypatch.setattr(app, "DEMO_MODE", True)
         html = c.get("/").get_data(as_text=True)
         assert 'id="range-line"' not in html and 'id="range-panel"' not in html
+
+
+class TestPreviewErrors:
+    def test_expired_auth_is_401(self, user, monkeypatch):
+        c = _client(user, monkeypatch)
+        def boom():
+            raise app.AuthExpired("x")
+        monkeypatch.setattr(app, "get_fresh_token", boom)
+        r = c.get("/sync/range/preview?after=2024-01-01")
+        assert r.status_code == 401
+        assert "sign-in expired — sign in again" in r.get_json()["error"]
+
+    def test_gmail_http_error_is_502(self, user, monkeypatch):
+        import requests
+        c = _client(user, monkeypatch)
+        monkeypatch.setattr(app, "get_fresh_token", lambda: "t")
+        def boom(*a, **k):
+            raise requests.HTTPError("503")
+        monkeypatch.setattr(gmail, "make_request", boom)
+        r = c.get("/sync/range/preview?after=2024-01-01")
+        assert r.status_code == 502
+        assert r.get_json()["error"] == "gmail did not answer — try again"
