@@ -137,13 +137,14 @@ class TestPreview:
         j = c.get("/sync/range/preview?after=2024-01-01").get_json()
         assert j == {"estimated_threads": 1000, "estimated_tagging_usd": 0.6,
                      "note": "estimate"}
-        assert "maxResults=1" in calls[0] and "after%3A2024/01/01" in calls[0].replace("%2F", "/")
+        assert "/threads?maxResults=1" in calls[0] and "after%3A2024/01/01" in calls[0].replace("%2F", "/")
 
     def test_preview_everything_has_no_q(self, user, monkeypatch):
         c = _client(user, monkeypatch)
         calls = self._mock(monkeypatch)
         assert c.get("/sync/range/preview?after=").status_code == 200
         assert "q=" not in calls[0]
+        assert "/threads?" in calls[0] and "/messages" not in calls[0]
 
     def test_invalid_or_future_date_is_400_without_gmail_call(self, user, monkeypatch):
         c = _client(user, monkeypatch)

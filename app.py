@@ -1668,7 +1668,7 @@ def sync_range_preview():
         return jsonify({"error": "after must be YYYY-MM-DD, not in the future, or empty"}), 400
     import gmail
     from urllib.parse import quote
-    url = f"{gmail.GMAIL_BASE}/messages?maxResults=1&includeSpamTrash=false"
+    url = f"{gmail.GMAIL_BASE}/threads?maxResults=1&includeSpamTrash=false"
     if after:
         url += f"&q={quote('after:' + after.replace('-', '/'))}"
     expired = {"error": f"{current_provider().label} sign-in expired — sign in again"}
