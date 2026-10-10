@@ -67,7 +67,8 @@ class MailProvider:
         """-> [{"id", "name"}]  — each carries its own cursor."""
         raise NotImplementedError
 
-    def changes_for_source(self, access_token, source_id, cursor):
+    def changes_for_source(self, access_token, source_id, cursor, *,
+                           sync_query=None):
         """-> (thread_ids, removed_message_ids, new_cursor, did_full_resync)"""
         raise NotImplementedError
 
@@ -116,7 +117,9 @@ class MicrosoftProvider(MailProvider):
         # One source per mail folder: Graph's delta feed is folder-scoped.
         return ms_graph.list_mail_folders(access_token, exclude_ids=exclude_ids)
 
-    def changes_for_source(self, access_token, source_id, cursor):
+    def changes_for_source(self, access_token, source_id, cursor, *,
+                           sync_query=None):
+        # Graph delta has no window; the per-user range is Gmail-only.
         changed, removed, new_cursor, full = ms_graph.delta_messages(
             access_token, source_id, cursor
         )
@@ -213,9 +216,10 @@ class GmailProvider(MailProvider):
         # One source: Gmail's history feed spans the whole mailbox.
         return [{"id": g_mail.MAILBOX_SOURCE_ID, "name": "All Mail"}]
 
-    def changes_for_source(self, access_token, source_id, cursor):
+    def changes_for_source(self, access_token, source_id, cursor, *,
+                           sync_query=None):
         thread_ids, removed, new_cursor, full = g_mail.history_changes(
-            access_token, cursor
+            access_token, cursor, sync_query=sync_query
         )
         # History reports one record per change; a busy thread repeats.
         return list(dict.fromkeys(thread_ids)), removed, new_cursor, full

@@ -97,7 +97,7 @@ def get_profile(access_token):
 
 # ── History sync ──────────────────────────────────────────────────────────────
 
-def history_changes(access_token, start_history_id=None):
+def history_changes(access_token, start_history_id=None, sync_query=None):
     """Page the mailbox history feed to completion.
 
     Returns (thread_ids, removed_message_ids, new_history_id, did_full_resync).
@@ -119,7 +119,7 @@ def history_changes(access_token, start_history_id=None):
             # historyId expired or rejected — restart from scratch.
             print(f"Gmail historyId invalid ({status}); full resync.")
 
-    thread_ids, new_history_id = _full_enumeration(headers)
+    thread_ids, new_history_id = _full_enumeration(headers, sync_query)
     return thread_ids, [], new_history_id, True
 
 
@@ -159,7 +159,7 @@ def _incremental_history(headers, start_history_id):
     return thread_ids, removed_ids, new_history_id
 
 
-def _full_enumeration(headers):
+def _full_enumeration(headers, sync_query=None):
     """Every thread id in the mailbox, plus the historyId to cursor from.
 
     The profile's historyId is read *before* the listing: mail arriving
@@ -177,7 +177,11 @@ def _full_enumeration(headers):
     new_history_id = profile.get("historyId")
 
     base = f"{GMAIL_BASE}/messages?maxResults=500&includeSpamTrash=false"
-    sync_query = os.getenv("GMAIL_SYNC_QUERY", "").strip()
+    # An explicit per-user window wins over the env default; "" means the
+    # user chose everything, so the env window must not apply either.
+    if sync_query is None:
+        sync_query = os.getenv("GMAIL_SYNC_QUERY", "")
+    sync_query = sync_query.strip()
     if sync_query:
         base += f"&q={quote(sync_query)}"
 

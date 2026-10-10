@@ -296,7 +296,7 @@ class TestGmailProviderBoundary:
 
     def test_changed_thread_ids_are_deduplicated(self, monkeypatch):
         monkeypatch.setattr(gmail, "history_changes",
-                            lambda tok, cur: (["t1", "t2", "t1"], ["m9"], "new", False))
+                            lambda tok, cur, sync_query=None: (["t1", "t2", "t1"], ["m9"], "new", False))
         tids, removed, cursor, full = providers.GmailProvider().changes_for_source(
             "tok", gmail.MAILBOX_SOURCE_ID, "old")
         assert tids == ["t1", "t2"]
