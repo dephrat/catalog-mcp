@@ -156,3 +156,20 @@ class TestPreview:
     def test_microsoft_preview_is_400(self, user, monkeypatch):
         c = _client(user, monkeypatch, provider="microsoft")
         assert c.get("/sync/range/preview?after=2024-01-01").status_code == 400
+
+
+class TestRangeTemplate:
+    def test_gmail_renders_control(self, user, monkeypatch):
+        html = _client(user, monkeypatch).get("/").get_data(as_text=True)
+        assert 'id="range-panel"' in html and 'id="range-change"' in html
+
+    def test_microsoft_renders_disabled_with_reason(self, user, monkeypatch):
+        html = _client(user, monkeypatch, provider="microsoft").get("/").get_data(as_text=True)
+        assert "range control is gmail-only" in html
+        assert 'id="range-panel"' not in html and 'id="range-change"' not in html
+
+    def test_demo_hides_control(self, user, monkeypatch):
+        c = _client(user, monkeypatch)
+        monkeypatch.setattr(app, "DEMO_MODE", True)
+        html = c.get("/").get_data(as_text=True)
+        assert 'id="range-line"' not in html and 'id="range-panel"' not in html

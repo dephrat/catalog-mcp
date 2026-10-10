@@ -344,6 +344,18 @@
 
     #export-btn:hover { color: var(--accent); border-color: var(--border); }
 
+    #range-line { font-family: var(--mono); font-size: 0.68rem; color: var(--text-dim); padding: 0.4rem 2.5rem 0; text-align: right; }
+    #range-line a { color: var(--accent); cursor: pointer; margin-left: 0.4rem; }
+    #range-line.disabled { opacity: 0.6; }
+    #range-panel { display: none; font-family: var(--mono); font-size: 0.7rem; color: var(--text-dim);
+      padding: 0.5rem 2.5rem; text-align: right; }
+    #range-panel button, #range-panel input { font-family: var(--mono); font-size: 0.7rem; background: var(--surface);
+      color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.25rem 0.6rem; cursor: pointer; }
+    #range-panel button:hover { border-color: var(--accent); }
+    #range-save { color: #0f0f0f !important; background: var(--accent) !important; border: none !important; }
+    #range-save:disabled { opacity: 0.4; cursor: default; }
+    #range-panel .row { margin-top: 0.4rem; }
+
     #sync-btn {
       font-family: var(--mono);
       font-size: 0.75rem;
@@ -449,6 +461,24 @@
     {% if not demo_mode %}<a id="wipe-btn" href="#" onclick="wipeCatalog(); return false;">✕ wipe</a>{% endif %}
   </div>
 </header>
+
+{% if not demo_mode %}
+{% set range_off = session.get('provider') == 'microsoft' %}
+<div id="range-line" class="{{ 'disabled' if range_off }}">
+  <span id="range-text">{% if range_off %}range control is gmail-only{% else %}index range: loading{% endif %}</span>
+  {% if not range_off %}<a id="range-change" onclick="toggleRange()">change</a>{% endif %}
+</div>
+{% if not range_off %}
+<div id="range-panel">
+  <button type="button" data-preset="1y">last year</button>
+  <button type="button" data-preset="3y">last 3 years</button>
+  <button type="button" data-preset="all">everything</button>
+  <input type="date" id="range-date" aria-label="custom start date">
+  <div class="row"><span id="range-preview"></span></div>
+  <div class="row"><button type="button" id="range-save" disabled>save</button> <span id="range-msg"></span></div>
+</div>
+{% endif %}
+{% endif %}
 
 {% if request.args.get('spend_limited') %}
 <div style="margin:0 0 1rem;padding:0.6rem 1rem;border:1px solid #7a4a2a;background:#241a10;
@@ -593,6 +623,74 @@
   {% endif %}
 </div>
 
+<script>
+  // sync range (gmail only)
+  var rangePick = null;
+  function rangeLabel(a) {
+    if (a === null || a === undefined) return 'index range not set — using server default';
+    return a ? 'indexing mail since ' + a : 'indexing everything';
+  }
+  function loadRange() {
+    var t = document.getElementById('range-text');
+    if (!t || !document.getElementById('range-change')) return;
+    fetch('/sync/range').then(function (r) { return r.json(); })
+      .then(function (j) { t.textContent = rangeLabel(j.sync_after); })
+      .catch(function () { t.textContent = 'index range unavailable'; });
+  }
+  function toggleRange() {
+    var p = document.getElementById('range-panel');
+    p.style.display = p.style.display === 'block' ? 'none' : 'block';
+  }
+  function pickRange(after) {
+    rangePick = after;
+    var pv = document.getElementById('range-preview'), sv = document.getElementById('range-save');
+    document.getElementById('range-msg').textContent = '';
+    sv.disabled = true;
+    pv.textContent = 'estimating…';
+    fetch('/sync/range/preview?after=' + encodeURIComponent(after)).then(function (r) {
+      return r.json().then(function (j) { return {ok: r.ok, j: j}; });
+    }).then(function (x) {
+      if (rangePick !== after) return;
+      if (!x.ok) { pv.textContent = x.j.error || 'preview failed'; return; }
+      pv.textContent = '≈ ' + x.j.estimated_threads + ' threads · ≈ $' +
+        x.j.estimated_tagging_usd.toFixed(2) + ' tagging (estimate)';
+      sv.disabled = false;
+    }).catch(function () { pv.textContent = 'preview failed'; });
+  }
+  (function initRange() {
+    var panel = document.getElementById('range-panel');
+    if (!panel) { loadRange(); return; }
+    panel.querySelectorAll('[data-preset]').forEach(function (b) {
+      b.onclick = function () {
+        var k = b.getAttribute('data-preset'), after = '';
+        if (k !== 'all') {
+          var d = new Date(); d.setFullYear(d.getFullYear() - (k === '1y' ? 1 : 3));
+          after = d.toISOString().slice(0, 10);
+        }
+        document.getElementById('range-date').value = after;
+        pickRange(after);
+      };
+    });
+    document.getElementById('range-date').onchange = function () {
+      if (this.value) pickRange(this.value);
+    };
+    document.getElementById('range-save').onclick = function () {
+      var msg = document.getElementById('range-msg'), sv = this;
+      sv.disabled = true;
+      fetch('/sync/range', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({after: rangePick})
+      }).then(function (r) { return r.json().then(function (j) { return {ok: r.ok, j: j}; }); })
+        .then(function (x) {
+          if (!x.ok) { msg.textContent = x.j.error || 'save failed'; sv.disabled = false; return; }
+          msg.textContent = x.j.full_rewalk_next_scan
+            ? 'next scan will re-walk your mailbox — existing threads are kept, older mail is added'
+            : 'saved — existing indexed mail is kept';
+          document.getElementById('range-text').textContent = rangeLabel(rangePick);
+        }).catch(function () { msg.textContent = 'save failed'; sv.disabled = false; });
+    };
+    loadRange();
+  })();
+</script>
 <script>
   let pollInterval = null;
   let syncStartTime = null;
