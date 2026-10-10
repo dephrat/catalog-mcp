@@ -1578,6 +1578,93 @@ def sync():
     return redirect(url_for("index"))
 
 
+def _parse_range_date(value):
+    """Validate a YYYY-MM-DD window start: "" (everything) or a real,
+    non-future date. Returns the normalised string, or None if invalid."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if value == "":
+        return ""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        return None
+    try:
+        d = datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    if d > datetime.now(timezone.utc).date():
+        return None
+    return value
+
+
+def _effective_window_date(user_id):
+    """The date the user's window currently starts at, or None for everything.
+    Stored value wins; unset falls back to the env default's after: date."""
+    stored = db.get_sync_after(user_id)
+    if stored is not None:
+        return stored or None
+    m = re.search(r"after:(\d{4})[/-](\d{2})[/-](\d{2})",
+                  os.getenv("GMAIL_SYNC_QUERY", ""))
+    if not m:
+        return None
+    try:
+        return datetime.strptime("-".join(m.groups()), "%Y-%m-%d").strftime("%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+@app.route("/sync/range", methods=["GET", "POST"])
+@login_required
+def sync_range():
+    user_id = current_user_id()
+    provider = current_provider()
+    gmail_user = provider.name == "gmail"
+    if request.method == "GET":
+        out = {"provider": provider.name, "sync_after": db.get_sync_after(user_id),
+               "editable": gmail_user}
+        if not gmail_user:
+            out["reason"] = "sync range is gmail-only"
+        return jsonify(out)
+
+    if not gmail_user:
+        return jsonify({"error": "sync range is gmail-only"}), 400
+    body = request.get_json(silent=True) or {}
+    new = _parse_range_date(body.get("after"))
+    if new is None:
+        return jsonify({"error": "after must be YYYY-MM-DD, not in the future, or empty"}), 400
+
+    current = _effective_window_date(user_id)
+    widening = (current is not None) and (new == "" or new < current)
+    if widening and (is_running(sync_running, user_id)
+                     or is_running(detective_running, user_id, ttl=DETECTIVE_TTL_SECONDS)):
+        return jsonify({"error": "a sync is running; try again when it finishes"}), 409
+
+    db.set_sync_after(user_id, new)
+    if widening:
+        db.clear_delta_links(user_id)
+    return jsonify({"stored": True, "full_rewalk_next_scan": widening})
+
+
+@app.route("/sync/range/preview")
+@login_required
+def sync_range_preview():
+    if current_provider().name != "gmail":
+        return jsonify({"error": "sync range is gmail-only"}), 400
+    after = _parse_range_date(request.args.get("after"))
+    if after is None:
+        return jsonify({"error": "after must be YYYY-MM-DD, not in the future, or empty"}), 400
+    import gmail
+    from urllib.parse import quote
+    url = f"{gmail.GMAIL_BASE}/messages?maxResults=1&includeSpamTrash=false"
+    if after:
+        url += f"&q={quote('after:' + after.replace('-', '/'))}"
+    data = gmail.make_request(gmail.get_headers(get_fresh_token()), url)
+    est = int(data.get("resultSizeEstimate", 0))
+    return jsonify({"estimated_threads": est,
+                    "estimated_tagging_usd": round(est * 0.0006, 2),
+                    "note": "estimate"})
+
+
 @app.route("/sync/progress")
 @login_required
 def sync_progress():
