@@ -178,9 +178,7 @@ class TestRangeTemplate:
 class TestPreviewErrors:
     def test_expired_auth_is_401(self, user, monkeypatch):
         c = _client(user, monkeypatch)
-        def boom():
-            raise app.AuthExpired("x")
-        monkeypatch.setattr(app, "get_fresh_token", boom)
+        monkeypatch.setattr(app, "get_fresh_token", lambda: None)
         r = c.get("/sync/range/preview?after=2024-01-01")
         assert r.status_code == 401
         assert "sign-in expired — sign in again" in r.get_json()["error"]

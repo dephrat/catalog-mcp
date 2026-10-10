@@ -1666,11 +1666,15 @@ def sync_range_preview():
     url = f"{gmail.GMAIL_BASE}/messages?maxResults=1&includeSpamTrash=false"
     if after:
         url += f"&q={quote('after:' + after.replace('-', '/'))}"
+    expired = {"error": f"{current_provider().label} sign-in expired — sign in again"}
     try:
-        data = gmail.make_request(gmail.get_headers(get_fresh_token()), url)
+        token = get_fresh_token()
+        if not token:
+            return jsonify(expired), 401
+        data = gmail.make_request(gmail.get_headers(token), url)
         est = int(data.get("resultSizeEstimate", 0))
     except AuthExpired:
-        return jsonify({"error": f"{current_provider().label} sign-in expired — sign in again"}), 401
+        return jsonify(expired), 401
     except Exception:
         return jsonify({"error": "gmail did not answer — try again"}), 502
     return jsonify({"estimated_threads": est,
