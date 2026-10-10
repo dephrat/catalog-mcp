@@ -220,3 +220,94 @@ def test_no_stored_credentials_exits_2(user, monkeypatch, capsys):
     assert calls == []
     err = capsys.readouterr().err.lower()
     assert "sign" in err and "web app" in err
+
+
+# ── --since ──────────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def gmail_user(seeded, monkeypatch):
+    user_id, email = seeded
+    db.set_token_cache(user_id, '{"refresh_token": "r"}')
+    fake = FakeProvider()
+    monkeypatch.setattr(providers, "get", lambda name: fake)
+    calls = _patch_run_sync(monkeypatch)
+    return user_id, email, calls
+
+
+def test_since_stores_setting_and_syncs(gmail_user):
+    user_id, email, calls = gmail_user
+    assert sync_cli.main(["--user", email, "--since", "2024-01-01"]) == 0
+    assert db.get_sync_after(user_id) == "2024-01-01"
+    assert len(calls) == 1
+
+
+def test_since_all_stores_empty_string(gmail_user):
+    user_id, email, _ = gmail_user
+    assert sync_cli.main(["--user", email, "--since", "all"]) == 0
+    assert db.get_sync_after(user_id) == ""
+
+
+def test_since_widening_clears_cursor(gmail_user):
+    user_id, email, _ = gmail_user
+    db.set_sync_after(user_id, "2024-06-01")
+    db.set_delta_link(user_id, "INBOX", "cursor")
+    assert sync_cli.main(["--user", email, "--since", "2023-01-01"]) == 0
+    assert db.get_sync_after(user_id) == "2023-01-01"
+    assert not db.has_delta_links(user_id)
+
+
+def test_since_narrowing_keeps_cursor(gmail_user):
+    user_id, email, _ = gmail_user
+    db.set_sync_after(user_id, "2023-01-01")
+    db.set_delta_link(user_id, "INBOX", "cursor")
+    assert sync_cli.main(["--user", email, "--since", "2024-01-01"]) == 0
+    assert db.has_delta_links(user_id)
+
+
+def test_since_unknown_prior_with_cursor_clears(gmail_user, monkeypatch):
+    user_id, email, _ = gmail_user
+    monkeypatch.delenv("GMAIL_SYNC_QUERY", raising=False)
+    db.set_delta_link(user_id, "INBOX", "cursor")
+    assert sync_cli.main(["--user", email, "--since", "2024-01-01"]) == 0
+    assert not db.has_delta_links(user_id)
+
+
+def test_since_no_cursor_is_safe(gmail_user, monkeypatch):
+    user_id, email, _ = gmail_user
+    monkeypatch.delenv("GMAIL_SYNC_QUERY", raising=False)
+    assert sync_cli.main(["--user", email, "--since", "2024-01-01"]) == 0
+    assert db.get_sync_after(user_id) == "2024-01-01"
+
+
+def test_since_identical_resave_is_noop(gmail_user):
+    user_id, email, _ = gmail_user
+    db.set_sync_after(user_id, "2024-01-01")
+    db.set_delta_link(user_id, "INBOX", "cursor")
+    assert sync_cli.main(["--user", email, "--since", "2024-01-01"]) == 0
+    assert db.has_delta_links(user_id)
+
+
+@pytest.mark.parametrize("bad", ["yesterday", "2024-13-40", "2999-01-01", ""])
+def test_since_invalid_exits_2(gmail_user, capsys, bad):
+    user_id, email, calls = gmail_user
+    assert sync_cli.main(["--user", email, "--since", bad]) == 2
+    assert "--since" in capsys.readouterr().err
+    assert calls == [] and db.get_sync_after(user_id) is None
+
+
+def test_since_while_running_exits_3_before_storing(gmail_user):
+    user_id, email, calls = gmail_user
+    db.set_delta_link(user_id, "INBOX", "cursor")
+    app.set_running(app.sync_running, user_id, True)
+    assert sync_cli.main(["--user", email, "--since", "all"]) == 3
+    assert db.get_sync_after(user_id) is None
+    assert db.has_delta_links(user_id) and calls == []
+
+
+def test_since_non_gmail_exits_2(seeded, monkeypatch, capsys):
+    user_id, email = seeded
+    monkeypatch.setattr(providers, "get", lambda n: FakeProvider())
+    calls = _patch_run_sync(monkeypatch)
+    assert sync_cli.main(["--user", email, "--since", "all"]) == 2
+    assert "gmail-only" in capsys.readouterr().err
+    assert db.get_sync_after(user_id) is None and calls == []

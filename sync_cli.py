@@ -13,6 +13,7 @@ requires at import time) is populated from .env in a plain shell.
 Exit codes: 0 success, 1 sync ran but failed (see server logs / sync_state),
 2 credentials missing/expired or CATALOG_USER/--user doesn't resolve to a
 user, 3 a sync already looks to be running for this account.
+--since (gmail only) stores the window before syncing, like POST /sync/range.
 """
 import argparse
 import os
@@ -51,7 +52,22 @@ def main(argv=None):
     parser.add_argument(
         "--user", metavar="EMAIL",
         help="account to sync (overrides CATALOG_USER)")
+    parser.add_argument(
+        "--since", metavar="YYYY-MM-DD|all",
+        help="gmail only: index mail from this date ('all' = everything) "
+             "before syncing; widening re-walks existing folders")
     args = parser.parse_args(argv)
+
+    since = None
+    if args.since is not None:
+        raw = args.since.strip()
+        # Empty is not "everything" here: that must be asked for as 'all'.
+        since = (None if raw == "" else
+                 app._parse_range_date("" if raw.lower() == "all" else raw))
+        if since is None:
+            print("--since must be YYYY-MM-DD (not in the future) or 'all'",
+                  file=sys.stderr)
+            return 2
 
     try:
         user_id = _resolve_user_id(args.user)
@@ -77,6 +93,15 @@ def main(argv=None):
     if progress["status"] in db.ACTIVE_STATUSES and not progress["stale"]:
         print(f"sync already running for {user_id}", file=sys.stderr)
         return 3
+
+    if since is not None:
+        if mcp_tools.provider_for(user_id) != "gmail":
+            print("--since is gmail-only", file=sys.stderr)
+            return 2
+        widening = app.range_change_widens(user_id, since)
+        db.set_sync_after(user_id, since)
+        if widening:
+            db.clear_delta_links(user_id)
 
     token_cache = db.get_token_cache(user_id)
     if not token_cache:

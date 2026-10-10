@@ -432,6 +432,26 @@ mailbox-wide history feed; Gmail only retains history for about a week, so a
 long pause between syncs triggers an automatic full re-enumeration — cheap,
 because unchanged threads are dropped before tagging.
 
+### Choosing how far back to index
+
+Gmail only. By default a Gmail account indexes whatever `GMAIL_SYNC_QUERY`
+allows; you can instead pick the start date per account.
+
+- **UI:** the sync-range control in the web app takes a start date (or
+  "everything") and shows a preview of how many threads that covers and a
+  rough tagging cost. Both numbers come from Gmail's result-size estimate, so
+  treat them as ballpark figures, not a quote.
+- **CLI:** `python sync_cli.py --since 2023-01-01` or `--since all`, then the
+  normal sync runs. Dates must be `YYYY-MM-DD` and not in the future; bad
+  input exits 2, and a sync already in progress exits 3 before anything is
+  changed.
+
+Widening is additive. Existing threads and tags are kept; saving an earlier
+date (or "all") discards the folder cursors so the next scan re-walks the
+mailbox and adds only the older mail. Saving the same date again, or a later
+one, changes nothing about the cursors. Microsoft accounts don't have this
+setting.
+
 ### Tests
 
 ```bash

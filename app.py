@@ -1613,6 +1613,20 @@ def _effective_window_date(user_id):
         return None
 
 
+def range_change_widens(user_id, new):
+    """True when saving window start `new` must discard the folder cursors so
+    older mail gets re-walked. Shared by POST /sync/range and sync_cli."""
+    stored = db.get_sync_after(user_id)
+    current = _effective_window_date(user_id)
+    if stored is None and current is None:
+        # Prior window unknown (not "everything"): any explicit choice may
+        # reach mail the existing cursor skipped, so re-walk if one exists.
+        return db.has_delta_links(user_id)
+    if stored is not None and new == stored:
+        return False
+    return (current is not None) and (new == "" or new < current)
+
+
 @app.route("/sync/range", methods=["GET", "POST"])
 @login_required
 def sync_range():
@@ -1633,16 +1647,7 @@ def sync_range():
     if new is None:
         return jsonify({"error": "after must be YYYY-MM-DD, not in the future, or empty"}), 400
 
-    stored = db.get_sync_after(user_id)
-    current = _effective_window_date(user_id)
-    if stored is None and current is None:
-        # Prior window unknown (not "everything"): any explicit choice may
-        # reach mail the existing cursor skipped, so re-walk if one exists.
-        widening = db.has_delta_links(user_id)
-    elif stored is not None and new == stored:
-        widening = False
-    else:
-        widening = (current is not None) and (new == "" or new < current)
+    widening = range_change_widens(user_id, new)
     if widening and (is_running(sync_running, user_id)
                      or is_running(detective_running, user_id, ttl=DETECTIVE_TTL_SECONDS)):
         return jsonify({"error": "a sync is running; try again when it finishes"}), 409
