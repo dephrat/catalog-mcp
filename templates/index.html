@@ -605,7 +605,7 @@
           </div>
           <div>
             <a class="dropdown-btn" style="text-decoration:none;display:inline-block;"
-               href="/threads/{{ t.thread_id|urlencode }}/read">read thread</a>
+               href="/threads/{{ t.thread_id|urlencode }}/read" target="_blank">read thread</a>
             <button class="dropdown-btn" onclick="toggleDropdown(this)">view messages ▾</button>
             <div class="dropdown-list" style="display:none;">
               {% for msg in t.message_ids_parsed %}
