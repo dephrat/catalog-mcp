@@ -1,0 +1,53 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/><title>Catalog — read thread</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet"/>
+<style>
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    :root{--bg:#0f0f0f;--surface:#171717;--border:#2a2a2a;--accent:#c8f97a;
+          --text:#e8e8e8;--dim:#888;--mono:"DM Mono",monospace;--sans:"DM Sans",sans-serif}
+    body{background:var(--bg);color:var(--text);font-family:var(--sans);
+         max-width:860px;margin:0 auto;padding:2rem 1rem 4rem}
+    .top{display:flex;justify-content:space-between;align-items:baseline;gap:1rem;
+         margin-bottom:1.5rem;flex-wrap:wrap}
+    .back{font-family:var(--mono);font-size:.78rem;color:var(--dim);text-decoration:none}
+    .back:hover{color:var(--accent)}
+    h1{font-size:1.15rem;font-weight:500;margin-bottom:.25rem}
+    .outlook{font-family:var(--mono);font-size:.75rem;color:var(--accent);text-decoration:none}
+    .err{background:var(--surface);border:1px solid #5a2a2a;color:#f08080;border-radius:6px;
+         padding:1rem;font-size:.9rem;margin-top:1rem}
+    .msg{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+         padding:1.1rem 1.25rem;margin-top:1rem}
+    .meta{display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;
+          font-family:var(--mono);font-size:.72rem;color:var(--dim);margin-bottom:.6rem}
+    .meta .from{color:var(--text)}
+    .meta a{color:var(--accent);text-decoration:none}
+    .body{font-size:.9rem;line-height:1.55;white-space:pre-wrap;word-break:break-word}
+    .loading-note{color:var(--dim);font-size:.85rem;margin-top:1rem}
+  </style></head><body>
+  <div class="top">
+    <div>
+      <a class="back" href="javascript:history.back()">&larr; back</a>
+      <h1>{{ subject or "(no subject)" }}</h1>
+    </div>
+    {% if web_link %}<a class="outlook" href="{{ web_link }}" target="_blank">open in mailbox &nearr;</a>{% endif %}
+  </div>
+
+  {% if error %}
+    <div class="err">{{ error }}</div>
+  {% endif %}
+
+  {% for m in messages %}
+    <div class="msg">
+      <div class="meta">
+        <span><span class="from">{{ m.from_addr }}</span>{% if m.to_addrs %} &rarr; {{ m.to_addrs }}{% endif %}</span>
+        <span>{{ m.date }}{% if m.has_attachments %} &#128206;{% endif %}
+          {% if m.web_link %} &middot; <a href="{{ m.web_link }}" target="_blank">open &nearr;</a>{% endif %}</span>
+      </div>
+      <div class="body">{{ m.body }}</div>
+    </div>
+  {% endfor %}
+
+  {% if not error and not messages %}
+    <div class="loading-note">this thread has no readable messages</div>
+  {% endif %}
+</body></html>

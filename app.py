@@ -17,6 +17,7 @@ import time
 import re
 import secrets
 import hmac
+import html as html_mod
 import hashlib
 import base64
 import gzip
@@ -1753,6 +1754,60 @@ def retag_empty():
 
 MAX_USER_TAGS_PER_REQUEST = 20
 MAX_TAG_LENGTH = 60
+
+
+@app.route("/threads/<path:thread_id>/read")
+@login_required
+def read_thread(thread_id):
+    """Read a whole conversation in the app, fetched live from the mailbox.
+
+    Bodies are deliberately not stored, so this is a per-view fetch through
+    the same provider path the MCP's get_thread uses. The catalog row gates
+    access: a thread id that isn't in this user's catalog is a 404 before
+    any provider call.
+    """
+    user_id = current_user_id()
+    conn = db.get_db()
+    try:
+        row = conn.execute(
+            "SELECT subject, web_link FROM threads WHERE user_id=? AND thread_id=?",
+            (user_id, thread_id),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return render_template("thread.html", error="no such thread in your catalog",
+                               subject="", messages=[], web_link=""), 404
+
+    token = get_fresh_token()
+    if not token:
+        return render_template(
+            "thread.html", subject=row["subject"], web_link=row["web_link"],
+            messages=[],
+            error=f"{current_provider().label} sign-in expired — "
+                  f"sign in again to read mail"), 401
+
+    try:
+        raw = current_provider().get_thread(token, thread_id)
+    except Exception:
+        return render_template(
+            "thread.html", subject=row["subject"], web_link=row["web_link"],
+            messages=[], error="the mailbox did not answer — try again"), 502
+
+    messages = [{
+        "from_addr": m.get("from_addr", ""),
+        "to_addrs": ", ".join(m.get("to_addrs", [])),
+        "date": (m.get("date") or "")[:16].replace("T", " "),
+        # Unescape entities after tag-stripping so "&amp;" reads as "&";
+        # Jinja re-escapes on render, so this stays injection-safe.
+        "body": html_mod.unescape(strip_html(m.get("body") or "")),
+        "has_attachments": bool(m.get("has_attachments")),
+        "web_link": m.get("web_link") or "",
+    } for m in sorted(raw, key=lambda m: m.get("date") or "")]
+
+    return render_template("thread.html", subject=row["subject"],
+                           web_link=row["web_link"], messages=messages,
+                           error=None)
 
 
 @app.route("/threads/<path:thread_id>/tags", methods=["POST"])
