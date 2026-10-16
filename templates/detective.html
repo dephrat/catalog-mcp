@@ -531,6 +531,29 @@ function parseClaudeResponse(text) {
     if (match) {
       try { return JSON.parse(match[0]); } catch {}
     }
+    // Invalid or truncated JSON (an unescaped character, or max_tokens
+    // cutting the reply mid-string). Salvage the fields individually
+    // rather than dumping a brace blob on the user: grab each string
+    // value up to the last parseable point and unescape it.
+    const field = (name) => {
+      const m = text.match(new RegExp('"' + name + '"\\s*:\\s*"'));
+      if (!m) return null;
+      let out = '', i = m.index + m[0].length;
+      while (i < text.length) {
+        const c = text[i];
+        if (c === '\\' && i + 1 < text.length) {
+          const n = text[i + 1];
+          out += n === 'n' ? '\n' : n === 't' ? '\t' : n;
+          i += 2;
+        } else if (c === '"') { break; }
+        else { out += c; i += 1; }
+      }
+      return out || null;
+    };
+    const conclusion = field('conclusion');
+    if (conclusion) {
+      return { conclusion, reasoning: field('reasoning') || '' };
+    }
     return { conclusion: text, reasoning: '' };
   }
 }

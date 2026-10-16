@@ -2000,7 +2000,9 @@ def detective_ask():
 
     kwargs = {
         "model": DETECTIVE_MODEL,
-        "max_tokens": 4000,
+        # The round-budget comment above assumes 8k; 4k was truncating long
+        # fact-map conclusions mid-JSON, which the UI then showed raw.
+        "max_tokens": 8000,
         "messages": messages,
     }
     if system_prompt:
