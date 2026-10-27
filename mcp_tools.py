@@ -338,6 +338,14 @@ def get_thread(thread_id):
     # lives for the whole agent session, so one refresh serves all of it.
     token_cache = _token_cache_mem.get(user_id) or db.get_token_cache(user_id)
     access_token, new_cache = provider.refresh_token(token_cache)
+    if not access_token and user_id in _token_cache_mem:
+        # The memory copy can go stale against the DB in one case: the user
+        # revoked or expired mid-session and re-signed in via the web app,
+        # which wrote a fresh cache we are now shadowing. Evict and retry
+        # once from the DB before declaring the sign-in dead.
+        del _token_cache_mem[user_id]
+        token_cache = db.get_token_cache(user_id)
+        access_token, new_cache = provider.refresh_token(token_cache)
     if new_cache and new_cache != token_cache:
         _token_cache_mem[user_id] = new_cache
     if not access_token:

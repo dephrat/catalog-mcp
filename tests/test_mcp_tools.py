@@ -470,3 +470,21 @@ class TestTokenMemoryCache:
         assert seen[1] == "new-cache"          # memory cache won the 2nd call
         assert db.get_token_cache("user-under-test") == "stale-db-cache"  # no DB write
         mcp_tools._token_cache_mem.clear()
+
+    def test_stale_memory_cache_falls_back_to_db_copy(
+            self, seeded, fake_provider, monkeypatch):
+        """Mid-session re-sign-in: memory holds a dead cache, the DB holds a
+        fresh one. The call must evict memory, retry from the DB, and
+        succeed — not tell the user their brand-new sign-in is expired."""
+        monkeypatch.setenv("CATALOG_USER", "owner@example.com")
+        db.set_token_cache("user-under-test", "fresh-db-cache")
+        mcp_tools._token_cache_mem["user-under-test"] = "dead-memory-cache"
+        real_refresh = fake_provider.refresh_token
+        fake_provider.refresh_token = lambda cache: (
+            (None, None) if cache == "dead-memory-cache" else real_refresh(cache))
+
+        out = mcp_tools.get_thread("car")
+
+        assert "error" not in out
+        assert mcp_tools._token_cache_mem["user-under-test"] == "new-cache"
+        mcp_tools._token_cache_mem.clear()
