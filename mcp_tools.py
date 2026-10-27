@@ -287,6 +287,12 @@ def _strip_html(text):
     return text
 
 
+# Per-process cache of refreshed provider token caches (user_id -> cache
+# string). Never persisted: the read-only rule stands; a restart just pays
+# one fresh refresh.
+_token_cache_mem = {}
+
+
 def get_thread(thread_id):
     """Fetch a thread's full content live from the mail provider.
 
@@ -327,8 +333,13 @@ def get_thread(thread_id):
         attachments = []
 
     provider = providers.get(provider_for(user_id))
-    token_cache = db.get_token_cache(user_id)
-    access_token, _ = provider.refresh_token(token_cache)
+    # The server is read-only against the DB, so refreshed token caches are
+    # kept in process memory instead of being written back: the stdio server
+    # lives for the whole agent session, so one refresh serves all of it.
+    token_cache = _token_cache_mem.get(user_id) or db.get_token_cache(user_id)
+    access_token, new_cache = provider.refresh_token(token_cache)
+    if new_cache and new_cache != token_cache:
+        _token_cache_mem[user_id] = new_cache
     if not access_token:
         return {
             "error": f"{provider.label} sign-in expired — please sign in "

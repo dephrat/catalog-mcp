@@ -446,3 +446,27 @@ class TestGetThread:
 
         assert out["truncated"] is True
         assert len(out["messages"][0]["body_text"]) == 50_000
+
+
+class TestTokenMemoryCache:
+    def test_refreshed_cache_is_reused_in_process_not_written_to_db(
+            self, seeded, fake_provider, monkeypatch):
+        """Option (b) for the discarded-refresh wart: the refreshed cache
+        lives in process memory for the server's lifetime. The DB is never
+        written (read-only rule), but the second call must present the
+        refreshed cache, not the stale DB one."""
+        monkeypatch.setenv("CATALOG_USER", "owner@example.com")
+        db.set_token_cache("user-under-test", "stale-db-cache")
+        mcp_tools._token_cache_mem.clear()
+        seen = []
+        real_refresh = fake_provider.refresh_token
+        fake_provider.refresh_token = lambda cache: (seen.append(cache),
+                                                     real_refresh(cache))[1]
+
+        mcp_tools.get_thread("car")
+        mcp_tools.get_thread("car")
+
+        assert seen[0] == "stale-db-cache"
+        assert seen[1] == "new-cache"          # memory cache won the 2nd call
+        assert db.get_token_cache("user-under-test") == "stale-db-cache"  # no DB write
+        mcp_tools._token_cache_mem.clear()
